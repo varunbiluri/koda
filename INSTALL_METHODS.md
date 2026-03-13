@@ -23,13 +23,13 @@ Complete reference for every way to install Koda CLI.
 ### Using curl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 ### Using wget
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+wget -qO- https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 **What happens:**
@@ -154,7 +154,7 @@ koda --version
 
 ```bash
 # Add tap (once available)
-brew tap your-org/koda
+brew tap varunbiluri/koda
 
 # Install
 brew install koda
@@ -175,13 +175,13 @@ brew upgrade koda
 
 ```bash
 # Pull image
-docker pull your-org/koda:latest
+docker pull varunbiluri/koda:latest
 
 # Run
-docker run -it -v $(pwd):/workspace your-org/koda init
+docker run -it -v $(pwd):/workspace varunbiluri/koda init
 
 # Alias for convenience
-alias koda='docker run -it -v $(pwd):/workspace your-org/koda'
+alias koda='docker run -it -v $(pwd):/workspace varunbiluri/koda'
 ```
 
 **Status:** 🚧 Not yet built

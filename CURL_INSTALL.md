@@ -9,13 +9,13 @@ One-line remote installation using curl or wget.
 ### Using curl (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 ### Using wget
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+wget -qO- https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 ---
@@ -40,7 +40,7 @@ The installation script automatically:
 ### Standard Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 ### Preview Before Installing
@@ -49,7 +49,7 @@ Download and review the script first:
 
 ```bash
 # Download
-curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh > install-koda.sh
+curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh > install-koda.sh
 
 # Review
 cat install-koda.sh
@@ -345,15 +345,15 @@ git push origin main
 **2. Create a short URL (optional):**
 ```bash
 # Example with GitHub raw URL
-https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh
+https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh
 
 # Or create a custom redirect
 https://koda.dev/install.sh → redirects to GitHub raw URL
 ```
 
 **3. Update documentation:**
-- Replace `your-org` with actual GitHub org
-- Update REPO_URL in install-remote.sh
+- ✅ Repository is configured for `varunbiluri/koda`
+- ✅ REPO_URL updated in install-remote.sh
 - Test the installation
 
 **4. Announce:**

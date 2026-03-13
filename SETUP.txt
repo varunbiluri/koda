@@ -9,11 +9,11 @@
 
   Using curl:
   ───────────
-  $ curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+  $ curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 
   Using wget:
   ───────────
-  $ wget -qO- https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+  $ wget -qO- https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 
   This automatically:
     ✓ Checks prerequisites (Node.js 18+, pnpm)

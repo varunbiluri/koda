@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO_URL="https://github.com/your-org/koda"  # Update with actual repo
+REPO_URL="https://github.com/varunbiluri/koda"  # Update with actual repo
 VERSION="latest"
 INSTALL_DIR="$HOME/.koda"
 BIN_DIR="$HOME/.local/bin"
@@ -220,7 +220,7 @@ show_next_steps() {
     echo "     koda doctor"
     echo ""
     echo "For help: koda --help"
-    echo "Documentation: https://github.com/your-org/koda"
+    echo "Documentation: https://github.com/varunbiluri/koda"
     echo ""
 }
 
