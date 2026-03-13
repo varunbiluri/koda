@@ -3,3 +3,4 @@ dist/
 .koda/
 *.tsbuildinfo
 .DS_Store
+.claude/
