@@ -21,7 +21,17 @@
       "Bash(node -e:*)",
       "Bash(node --input-type=module -e:*)",
       "Bash(npx tsx:*)",
-      "Bash(/Users/varunbilluri/AI/SETUP.txt:*)"
+      "Bash(/Users/varunbilluri/AI/SETUP.txt:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git pull:*)",
+      "Bash(git branch:*)",
+      "Bash(wc -l /Users/varunbilluri/AI/src/**/*.ts | tail -1)",
+      "Bash(find /Users/varunbilluri/AI -type f -name \"*.ts\" -path \"*lsp*\" -o -type f -name \"*lsp*.ts\" 2>/dev/null | head -20)",
+      "Bash(find /Users/varunbilluri/AI/src -type f -name \"*.ts\" 2>/dev/null | xargs grep -l \"LSP\\\\|lsp\\\\|language.*server\" 2>/dev/null | head -20)"
     ]
   }
 }

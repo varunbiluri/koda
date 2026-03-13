@@ -1,10 +1,14 @@
 import { createProgram } from './cli/index.js';
+import { SessionManager } from './cli/session/session-manager.js';
 
-const program = createProgram();
-
-// If no args, start REPL; otherwise parse command
+// If no subcommand given, start the conversational session
 if (process.argv.length <= 2) {
-  program.parse(['node', 'koda', 'repl']);
+  const session = new SessionManager();
+  session.start(process.cwd()).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 } else {
+  const program = createProgram();
   program.parse(process.argv);
 }
