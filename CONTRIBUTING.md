@@ -102,7 +102,7 @@ cd koda
 
 3. **Add upstream remote:**
 ```bash
-git remote add upstream https://github.com/ORIGINAL_OWNER/koda.git
+git remote add upstream https://github.com/varunbiluri/koda.git
 ```
 
 4. **Install dependencies:**
