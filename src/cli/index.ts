@@ -19,6 +19,11 @@ import { createSkillsCommand } from './commands/skills.js';
 import { createSymbolsCommand } from './commands/symbols.js';
 import { createIndexStatusCommand } from './commands/index-status.js';
 import { createWorkersCommand } from './commands/workers.js';
+import { createStartLspCommand } from './commands/start-lsp.js';
+import { createWatchCommand } from './commands/watch.js';
+import { createExplainCommand } from './commands/explain.js';
+import { createImproveCommand } from './commands/improve.js';
+import { createConfigCommand } from './commands/config.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
@@ -54,6 +59,15 @@ export function createProgram(): Command {
   program.addCommand(createSymbolsCommand());
   program.addCommand(createIndexStatusCommand());
   program.addCommand(createWorkersCommand());
+
+  // Phase 7: Developer Platform & IDE Integration
+  program.addCommand(createStartLspCommand());
+  program.addCommand(createWatchCommand());
+  program.addCommand(createExplainCommand());
+  program.addCommand(createImproveCommand());
+
+  // Phase 8: Conversational CLI
+  program.addCommand(createConfigCommand());
 
   // Interactive mode
   program.addCommand(replCommand);
