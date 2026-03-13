@@ -30,13 +30,13 @@ Koda is a multi-phase AI software engineering system that combines repository in
 Install Koda with a single command using curl:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 Or using wget:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+wget -qO- https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
 **What this does:** Downloads, builds, and installs Koda to `~/.koda` with automatic PATH setup.
