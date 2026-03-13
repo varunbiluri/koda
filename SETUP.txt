@@ -1,0 +1,149 @@
+╔══════════════════════════════════════════════════════════════╗
+║                    KODA CLI INSTALLATION                     ║
+║              AI Software Engineer for Your Terminal          ║
+╚══════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────┐
+│ METHOD 1: ONE-LINE INSTALL (EASIEST) ⚡                      │
+└──────────────────────────────────────────────────────────────┘
+
+  Using curl:
+  ───────────
+  $ curl -fsSL https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+
+  Using wget:
+  ───────────
+  $ wget -qO- https://raw.githubusercontent.com/your-org/koda/main/scripts/install-remote.sh | bash
+
+  This automatically:
+    ✓ Checks prerequisites (Node.js 18+, pnpm)
+    ✓ Downloads and installs Koda to ~/.koda
+    ✓ Adds to PATH automatically
+    ✓ Verifies installation
+
+  See CURL_INSTALL.md for details and security info
+
+┌──────────────────────────────────────────────────────────────┐
+│ METHOD 2: AUTOMATED SCRIPT (LOCAL)                          │
+└──────────────────────────────────────────────────────────────┘
+
+  $ ./install.sh
+
+  Runs the installation script from the local directory.
+
+┌──────────────────────────────────────────────────────────────┐
+│ METHOD 3: MANUAL INSTALLATION (3 STEPS)                     │
+└──────────────────────────────────────────────────────────────┘
+
+  Step 1: Install dependencies
+  ─────────────────────────────
+  $ pnpm install
+
+
+  Step 2: Build the project
+  ──────────────────────────
+  $ pnpm build
+
+
+  Step 3: Install globally
+  ─────────────────────────
+  $ pnpm link --global
+
+
+  Step 4: Verify
+  ───────────────
+  $ koda --version
+
+  Expected output: 0.1.0
+
+┌──────────────────────────────────────────────────────────────┐
+│ TROUBLESHOOTING: Command not found                          │
+└──────────────────────────────────────────────────────────────┘
+
+  If you see "koda: command not found":
+
+  For curl/automated install:
+  ────────────────────────────
+  The script should add to PATH automatically.
+  Just restart your terminal or run:
+  $ source ~/.zshrc  (or ~/.bashrc)
+
+  For manual install:
+  ───────────────────
+  1. Check pnpm global bin location:
+     $ pnpm bin -g
+
+  2. Add to your PATH (in ~/.zshrc or ~/.bashrc):
+     export PATH="$(pnpm bin -g):$PATH"
+
+  3. Reload your shell:
+     $ source ~/.zshrc
+
+┌──────────────────────────────────────────────────────────────┐
+│ FIRST TIME USAGE                                             │
+└──────────────────────────────────────────────────────────────┘
+
+  Navigate to your project:
+  $ cd /path/to/your/project
+
+  Initialize Koda:
+  $ koda init
+
+  Test it out:
+  $ koda ask "how does authentication work?"
+  $ koda status
+  $ koda doctor
+
+┌──────────────────────────────────────────────────────────────┐
+│ DEVELOPMENT MODE (WITHOUT INSTALL)                           │
+└──────────────────────────────────────────────────────────────┘
+
+  Install & build:
+  $ pnpm install
+  $ pnpm build
+
+  Run commands:
+  $ pnpm dev init
+  $ pnpm dev ask "your question"
+  $ pnpm dev --help
+
+┌──────────────────────────────────────────────────────────────┐
+│ UNINSTALL                                                    │
+└──────────────────────────────────────────────────────────────┘
+
+  Using curl install:
+  ───────────────────
+  $ curl -fsSL https://url/install-remote.sh | bash -s uninstall
+
+  Manual uninstall:
+  ─────────────────
+  $ pnpm uninstall -g koda
+  $ rm -rf ~/.koda/koda
+
+┌──────────────────────────────────────────────────────────────┐
+│ PREREQUISITES                                                │
+└──────────────────────────────────────────────────────────────┘
+
+  ✓ Node.js 18+    → Check: node --version
+  ✓ pnpm 8+        → Check: pnpm --version
+
+  Install pnpm if needed:
+  $ npm install -g pnpm
+
+  The curl/wget install will check these automatically!
+
+┌──────────────────────────────────────────────────────────────┐
+│ MORE HELP                                                    │
+└──────────────────────────────────────────────────────────────┘
+
+  Curl Install:   See CURL_INSTALL.md
+  Quick Start:    See QUICKSTART.md
+  Full Install:   See INSTALL.md
+  Documentation:  See README.md
+
+  Commands:       koda --help
+
+╔══════════════════════════════════════════════════════════════╗
+║  Recommended: curl -fsSL <url>/install-remote.sh | bash    ║
+║  Alternative: ./install.sh                                  ║
+╚══════════════════════════════════════════════════════════════╝

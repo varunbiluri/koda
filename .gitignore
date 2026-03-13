@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.koda/
+*.tsbuildinfo
+.DS_Store

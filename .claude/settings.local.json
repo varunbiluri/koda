@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --version)",
+      "Bash(npm --version)",
+      "Bash(pnpm --version:*)",
+      "Bash(npx --version)",
+      "Bash(pnpm info:*)",
+      "Bash(pnpm search:*)",
+      "WebSearch",
+      "Bash(npm install:*)",
+      "Bash(pnpm init:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm remove:*)",
+      "Bash(pnpm approve-builds:*)",
+      "Bash(pnpm install:*)",
+      "Bash(chmod:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm dev:*)",
+      "Bash(node -e:*)",
+      "Bash(node --input-type=module -e:*)",
+      "Bash(npx tsx:*)",
+      "Bash(/Users/varunbilluri/AI/SETUP.txt:*)"
+    ]
+  }
+}
