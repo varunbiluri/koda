@@ -13,6 +13,9 @@ import { refactorCommand } from './commands/refactor.js';
 import { createDoctorCommand } from './commands/doctor.js';
 import { createHistoryCommand } from './commands/history.js';
 import { createReplayCommand } from './commands/replay.js';
+import { createPlanCommand } from './commands/plan.js';
+import { createGraphCommand } from './commands/graph.js';
+import { createSkillsCommand } from './commands/skills.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
@@ -38,6 +41,11 @@ export function createProgram(): Command {
   program.addCommand(createDoctorCommand());
   program.addCommand(createHistoryCommand());
   program.addCommand(createReplayCommand());
+
+  // Phase 5: Hierarchical Intelligence
+  program.addCommand(createPlanCommand());
+  program.addCommand(createGraphCommand());
+  program.addCommand(createSkillsCommand());
 
   // Interactive mode
   program.addCommand(replCommand);
