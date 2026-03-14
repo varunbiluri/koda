@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import ora from 'ora';
 import chalk from 'chalk';
 import { runIndexingPipeline } from '../../engine/indexing-pipeline.js';
+import { ArchitectureAgentMd } from '../../agents/architecture-agent.js';
 import { handleCliError } from '../errors.js';
 
 export const initCommand = new Command('init')
@@ -18,7 +19,7 @@ export const initCommand = new Command('init')
         },
       });
 
-      spinner.succeed(chalk.green('Indexing complete!'));
+      spinner.succeed(chalk.green('Repository indexed'));
       console.log(`  Files: ${result.metadata.fileCount}`);
       console.log(`  Chunks: ${result.metadata.chunkCount}`);
       console.log(`  Dependencies: ${result.metadata.edgeCount}`);
@@ -31,6 +32,21 @@ export const initCommand = new Command('init')
         if (result.warnings.length > 10) {
           console.log(chalk.yellow(`    ... and ${result.warnings.length - 10} more`));
         }
+      }
+
+      // ── Generate AGENTS.md ──────────────────────────────────────────────────
+      const analyzeSpinner = ora('Analyzing architecture...').start();
+      try {
+        const agent = new ArchitectureAgentMd();
+        const report = agent.analyze(result.index);
+        analyzeSpinner.succeed(chalk.green('Architecture analyzed'));
+
+        const writeSpinner = ora('Generating AGENTS.md...').start();
+        await agent.writeAgentsMd(rootPath, report.agentsMd);
+        writeSpinner.succeed(chalk.green('AGENTS.md generated'));
+      } catch (analyzeErr) {
+        analyzeSpinner.fail(chalk.yellow('Architecture analysis failed (non-critical)'));
+        console.log(chalk.gray(`  ${(analyzeErr as Error).message}`));
       }
     } catch (err) {
       spinner.fail('Indexing failed');

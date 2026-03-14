@@ -22,6 +22,7 @@ export interface PipelineOptions {
 export interface PipelineResult {
   metadata: IndexMetadata;
   warnings: string[];
+  index: RepoIndex;
 }
 
 function getExtractor(language: string): BaseExtractor | null {
@@ -159,5 +160,5 @@ export async function runIndexingPipeline(
   await saveIndex(rootPath, index);
   progress('Done!');
 
-  return { metadata, warnings };
+  return { metadata, warnings, index };
 }
