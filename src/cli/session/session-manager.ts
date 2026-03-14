@@ -2,6 +2,7 @@ import * as readline from 'node:readline';
 import * as path from 'node:path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
+import prompts from 'prompts';
 import { UIRenderer } from './ui-renderer.js';
 import { ConversationEngine, type ConversationContext } from './conversation-engine.js';
 import { loadIndex } from '../../store/index-store.js';
@@ -163,62 +164,117 @@ export class SessionManager {
 
   /**
    * Interactive setup wizard for Azure credentials.
+   *
+   * Flow:
+   *  1. Prompt for endpoint (validates https://)
+   *  2. Prompt for API key (hidden password input)
+   *  3. Fetch available deployments from Azure API
+   *  4. Let user select a deployment with arrow keys
+   *  5. Save config and confirm success
+   *
+   * Retries from step 1 if the Azure request fails.
    * Returns true if credentials were successfully configured.
    */
   async runSetupWizard(): Promise<boolean> {
     this.ui.renderSetupHeader();
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false,
-    });
+    // Prevent prompts from catching SIGINT so our Ctrl+C handler works
+    prompts.override({});
 
-    const question = (prompt: string): Promise<string> =>
-      new Promise((resolve) => {
-        rl.question(chalk.cyan(`  ${prompt}: `), (answer) => resolve(answer.trim()));
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // ── Step 1: Endpoint ────────────────────────────────────────────────
+      const { endpoint } = await prompts({
+        type: 'text',
+        name: 'endpoint',
+        message: 'Azure endpoint',
+        hint: 'e.g. https://your-resource.openai.azure.com',
+        validate: (v: string) =>
+          v.startsWith('https://') ? true : 'Endpoint must start with https://',
       });
 
-    try {
-      const endpoint = await question('Azure endpoint (e.g. https://your-resource.openai.azure.com)');
-      const apiKey = await question('API key');
-      const model = await question('Deployment name (e.g. gpt-4o)');
-
-      if (!endpoint || !apiKey || !model) {
-        this.ui.renderError('Setup cancelled — all fields are required.');
-        rl.close();
+      if (!endpoint) {
+        this.ui.renderError('Setup cancelled.');
         return false;
       }
 
-      const config: AIConfig = {
-        provider: 'azure',
-        endpoint: endpoint.replace(/\/$/, ''),
-        apiKey,
-        model,
-        apiVersion: '2024-08-01-preview',
-      };
+      // ── Step 2: API key (hidden) ─────────────────────────────────────────
+      const { apiKey } = await prompts({
+        type: 'password',
+        name: 'apiKey',
+        message: 'API key',
+      });
 
-      // Test connection
-      console.log();
-      const spinner = this.ui.renderThinking();
-      spinner.text = 'Testing Azure connection…';
-
-      try {
-        const provider = new AzureAIProvider(config);
-        await provider.listModels();
-        this.ui.stopSpinner(true, 'connection successful');
-      } catch {
-        // Connection test failed — still save, maybe it's a permission issue with list-models
-        this.ui.stopSpinner(true, 'configuration saved (connection test skipped)');
+      if (!apiKey) {
+        this.ui.renderError('Setup cancelled.');
+        return false;
       }
 
-      await saveConfig(config);
+      const cleanEndpoint = endpoint.replace(/\/$/, '');
+
+      // ── Step 3: Fetch deployments ────────────────────────────────────────
       console.log();
-      rl.close();
+      const spinner = this.ui.renderThinking();
+      spinner.text = 'Fetching deployments…';
+
+      let deploymentIds: string[];
+      try {
+        deploymentIds = await AzureAIProvider.fetchDeployments(cleanEndpoint, apiKey);
+        this.ui.stopSpinner(true);
+      } catch {
+        this.ui.stopSpinner(false, 'Azure connection failed');
+        console.log();
+
+        const { retry } = await prompts({
+          type: 'confirm',
+          name: 'retry',
+          message: 'Retry setup?',
+          initial: true,
+        });
+
+        if (retry) {
+          console.log();
+          continue;
+        }
+        return false;
+      }
+
+      if (deploymentIds.length === 0) {
+        this.ui.renderError('No deployments found in this Azure resource.');
+        return false;
+      }
+
+      // ── Step 4: Select deployment ────────────────────────────────────────
+      const { deployment } = await prompts({
+        type: 'select',
+        name: 'deployment',
+        message: 'Select a model deployment',
+        choices: deploymentIds.map((id) => ({ title: id, value: id })),
+      });
+
+      if (!deployment) {
+        this.ui.renderError('Setup cancelled.');
+        return false;
+      }
+
+      // ── Step 5: Save config ──────────────────────────────────────────────
+      const config: AIConfig = {
+        provider: 'azure',
+        endpoint: cleanEndpoint,
+        apiKey,
+        model: deployment,
+        apiVersion: '2024-05-01-preview',
+      };
+
+      await saveConfig(config);
+
+      // ── Step 6: Confirmation ─────────────────────────────────────────────
+      console.log();
+      console.log(`  ${chalk.green('✔')} Azure connection successful`);
+      console.log(`  ${chalk.green('✔')} Model selected: ${chalk.cyan(deployment)}`);
+      console.log();
+
       return true;
-    } catch {
-      rl.close();
-      return false;
     }
   }
 
@@ -226,6 +282,7 @@ export class SessionManager {
     this.rl?.close();
   }
 }
+
 
 function getGitBranch(rootPath: string): string {
   try {
