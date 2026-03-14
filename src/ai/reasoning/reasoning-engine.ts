@@ -107,6 +107,7 @@ export class ReasoningEngine {
     query: string,
     onChunk: (chunk: string) => void,
     options: ReasoningOptions = {},
+    onStage?: (message: string) => void,
   ): Promise<Omit<ReasoningResult, 'answer'>> {
     const {
       maxResults = 10,
@@ -117,6 +118,7 @@ export class ReasoningEngine {
     logger.debug(`Analyzing query (streaming): ${query}`);
 
     // Step 1: Vector search
+    onStage?.('🔍  reading files');
     const searchResults = this.queryEngine.search(query, maxResults);
 
     if (searchResults.length === 0) {
@@ -129,6 +131,7 @@ export class ReasoningEngine {
       .filter((c): c is NonNullable<typeof c> => c !== undefined);
 
     // Step 3: Build context
+    onStage?.('🧠  planning changes');
     const contextResult = buildContext(chunks, maxTokens);
     const fileReferences = formatFileReferences(contextResult.chunks);
 
@@ -146,6 +149,7 @@ export class ReasoningEngine {
     ];
 
     // Step 5: Stream AI model response
+    onStage?.('✏  generating response');
     await this.provider.streamChatCompletion(
       {
         messages,

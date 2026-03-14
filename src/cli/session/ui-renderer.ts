@@ -98,6 +98,20 @@ export class UIRenderer {
     console.log('\n');
   }
 
+  /**
+   * Write an incremental reasoning stage message.
+   * Stops the spinner so the message appears on its own line.
+   * Example: stream('🔍  reading files')
+   */
+  stream(message: string): void {
+    if (this.spinner?.isSpinning) {
+      this.spinner.stop();
+      this.spinner = null;
+      console.log();
+    }
+    process.stdout.write('  ' + message + '\n');
+  }
+
   renderPlan(steps: string[]): void {
     console.log();
     console.log('  ' + chalk.bold('Plan:'));
