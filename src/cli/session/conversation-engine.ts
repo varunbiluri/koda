@@ -102,7 +102,7 @@ export class ConversationEngine {
       const provider = new AzureAIProvider(config);
       const engine = new ReasoningEngine(ctx.index, provider);
 
-      await engine.chat(
+      const metrics = await engine.chat(
         input,
         {
           repoName: path.basename(ctx.rootPath),
@@ -128,6 +128,9 @@ export class ConversationEngine {
       }
 
       this.ui.renderStreamEnd();
+      if (metrics) {
+        this.ui.renderExecutionSummary(metrics);
+      }
     } catch (err) {
       // Remove the optimistically-pushed user message on failure
       this.history.pop();

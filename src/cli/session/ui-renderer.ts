@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import type { FilePatch } from '../../patch/types.js';
+import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
 
 export interface HeaderContext {
   repoName: string;
@@ -219,6 +220,14 @@ export class UIRenderer {
 
   renderDivider(): void {
     console.log('  ' + chalk.gray('─'.repeat(60)));
+  }
+
+  renderExecutionSummary(metrics: ChatMetrics): void {
+    const tokensK = Math.round(metrics.tokens / 1000);
+    console.log(
+      '  ' + chalk.gray(`Done (${metrics.tools} tools · ${tokensK}k tokens · ${metrics.duration}s)`),
+    );
+    console.log();
   }
 
   renderMeta(filesAnalyzed: string[], chunksUsed: number, truncated: boolean): void {
