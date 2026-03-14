@@ -61,6 +61,7 @@ function makeUI(): UIRenderer {
     renderSetupHeader: vi.fn(),
     renderDivider: vi.fn(),
     renderMeta: vi.fn(),
+    renderExecutionSummary: vi.fn(),
   } as unknown as UIRenderer;
 }
 
