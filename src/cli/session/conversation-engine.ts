@@ -39,6 +39,9 @@ export class ConversationEngine {
       case 'quit':
         return { handled: true, shouldQuit: true };
 
+      case 'greeting':
+        return this.handleGreeting();
+
       case 'help':
         this.ui.renderHelp();
         return { handled: true, shouldQuit: false };
@@ -62,6 +65,22 @@ export class ConversationEngine {
       default:
         return this.handleExplain(detected, ctx);
     }
+  }
+
+  private handleGreeting(): ConversationResponse {
+    console.log();
+    console.log(`  Hello! I'm ${chalk.cyan('Koda')}, your AI software engineer.`);
+    console.log();
+    console.log('  You can ask me to:');
+    console.log();
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('explain')} ${chalk.gray('code or architecture')}`);
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('add')} ${chalk.gray('new features')}`);
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('fix')} ${chalk.gray('bugs and errors')}`);
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('refactor')} ${chalk.gray('existing modules')}`);
+    console.log();
+    console.log(`  ${chalk.gray('What would you like to build?')}`);
+    console.log();
+    return { handled: true, shouldQuit: false };
   }
 
   private async handleStatus(ctx: ConversationContext): Promise<ConversationResponse> {
@@ -91,10 +110,18 @@ export class ConversationEngine {
     }
 
     if (!ctx.hasConfig) {
-      // Fall back to local search
-      return this.handleSearch(detected.subject || detected.subject, ctx.index);
+      // Fall back to local search (no AI config)
+      return this.handleSearch(detected.subject, ctx.index, ctx);
     }
 
+    return this.handleExplainWithAI(detected.subject, ctx.index, ctx);
+  }
+
+  private async handleExplainWithAI(
+    query: string,
+    index: RepoIndex,
+    ctx: ConversationContext,
+  ): Promise<ConversationResponse> {
     // AI-powered analysis
     this.ui.renderThinking();
     this.ui.renderStage('analyzing');
@@ -102,13 +129,13 @@ export class ConversationEngine {
     try {
       const config = await loadConfig();
       const provider = new AzureAIProvider(config);
-      const engine = new ReasoningEngine(ctx.index, provider);
+      const engine = new ReasoningEngine(index, provider);
 
       this.ui.renderStage('running');
       this.ui.stopSpinner(true);
 
       const meta = await engine.analyzeStream(
-        detected.subject,
+        query,
         (chunk) => {
           this.ui.renderStreamChunk(chunk);
         },
@@ -118,18 +145,22 @@ export class ConversationEngine {
       this.ui.renderMeta(meta.filesAnalyzed, meta.chunksUsed, meta.contextTruncated);
     } catch {
       this.ui.stopSpinner(false);
-      // Fall back to search
-      return this.handleSearch(detected.subject, ctx.index);
+      // Fall back to local search on AI error
+      return this.handleSearch(query, index);
     }
 
     return { handled: true, shouldQuit: false };
   }
 
-  private handleSearch(query: string, index: RepoIndex): ConversationResponse {
+  private async handleSearch(query: string, index: RepoIndex, ctx?: ConversationContext): Promise<ConversationResponse> {
     const engine = new QueryEngine(index);
     const results = engine.search(query, 8);
 
     if (results.length === 0) {
+      // If AI is configured, route to reasoning engine instead of showing "no results"
+      if (ctx?.hasConfig) {
+        return this.handleExplainWithAI(query, index, ctx);
+      }
       this.ui.renderError(`No results found for "${query}".`);
       return { handled: true, shouldQuit: false };
     }

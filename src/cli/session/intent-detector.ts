@@ -6,6 +6,7 @@ export type Intent =
   | 'search'
   | 'status'
   | 'help'
+  | 'greeting'
   | 'quit';
 
 export interface DetectedIntent {
@@ -21,6 +22,15 @@ interface IntentPattern {
 }
 
 const INTENT_PATTERNS: IntentPattern[] = [
+  {
+    intent: 'greeting',
+    patterns: [
+      /^(hi|hello|hey|howdy|hiya|greetings|sup|yo)[\s!?.]*$/i,
+      /^(hi|hello|hey) (there|koda)[\s!?.]*$/i,
+      /^good (morning|afternoon|evening)[\s!?.]*$/i,
+    ],
+    weight: 95,
+  },
   {
     intent: 'quit',
     patterns: [/^(quit|exit|bye|goodbye|q)$/i, /^(ctrl.?c|:q)$/i],
@@ -122,6 +132,7 @@ function extractSubject(input: string, intent: Intent): string {
     search: [/^(find|search|search for|look for|locate|show me)\s*/i],
     status: [],
     help: [],
+    greeting: [],
     quit: [],
   };
 
