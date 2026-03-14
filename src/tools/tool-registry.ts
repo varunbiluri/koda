@@ -156,16 +156,27 @@ export class ToolRegistry {
   /**
    * Execute a tool by name with the arguments provided by the AI.
    * Always returns a string — the AI receives this as the tool result.
+   *
+   * @param onStage - Optional callback for emitting a user-visible progress message
+   *                  specific to this tool call (e.g. "📖  reading src/auth.ts").
    */
-  async execute(name: string, args: Record<string, unknown>): Promise<string> {
+  async execute(
+    name: string,
+    args: Record<string, unknown>,
+    onStage?: (message: string) => void,
+  ): Promise<string> {
     switch (name) {
       case 'read_file': {
-        const result = await readFile(String(args['path'] ?? ''), this.rootPath);
+        const filePath = String(args['path'] ?? '');
+        onStage?.(`📖  reading ${filePath}`);
+        const result = await readFile(filePath, this.rootPath);
         return result.success ? (result.data ?? '') : `Error: ${result.error}`;
       }
 
       case 'search_code': {
-        const result = await searchCode(String(args['query'] ?? ''), this.rootPath);
+        const query = String(args['query'] ?? '');
+        onStage?.(`🔍  searching for "${query}"`);
+        const result = await searchCode(query, this.rootPath);
         if (!result.success) return `Error: ${result.error}`;
         const hits = result.data ?? [];
         if (hits.length === 0) return 'No results found.';
@@ -176,43 +187,49 @@ export class ToolRegistry {
       }
 
       case 'list_files': {
-        const result = await listFiles(String(args['path'] ?? '.'), this.rootPath);
+        const dirPath = String(args['path'] ?? '.');
+        onStage?.(`📁  listing ${dirPath}`);
+        const result = await listFiles(dirPath, this.rootPath);
         return result.success ? (result.data ?? []).join('\n') : `Error: ${result.error}`;
       }
 
       case 'git_branch': {
+        onStage?.('🔧  git branch');
         const result = await gitBranch(this.rootPath);
         return result.success ? (result.data ?? 'unknown') : `Error: ${result.error}`;
       }
 
       case 'git_status': {
+        onStage?.('🔧  git status');
         const result = await gitStatus(this.rootPath);
         return result.success ? (result.data ?? '') : `Error: ${result.error}`;
       }
 
       case 'git_diff': {
+        onStage?.('🔧  git diff');
         const result = await gitDiff(this.rootPath);
         return result.success ? (result.data ?? '') : `Error: ${result.error}`;
       }
 
       case 'git_log': {
+        onStage?.('🔧  git log');
         const count = typeof args['count'] === 'number' ? args['count'] : 10;
         const result = await gitLog(count, this.rootPath);
         return result.success ? (result.data ?? '') : `Error: ${result.error}`;
       }
 
       case 'run_terminal': {
-        const result = await runTerminal(String(args['command'] ?? ''), this.rootPath);
+        const command = String(args['command'] ?? '');
+        onStage?.(`⚙  running: ${command}`);
+        const result = await runTerminal(command, this.rootPath);
         if (!result.success) return `Error: ${result.error}`;
         return result.data?.stdout ?? '';
       }
 
       case 'write_file': {
-        const result = await writeFile(
-          String(args['path'] ?? ''),
-          String(args['content'] ?? ''),
-          this.rootPath,
-        );
+        const filePath = String(args['path'] ?? '');
+        onStage?.(`✏  writing ${filePath}`);
+        const result = await writeFile(filePath, String(args['content'] ?? ''), this.rootPath);
         return result.success ? 'File written successfully.' : `Error: ${result.error}`;
       }
 
