@@ -7,7 +7,7 @@ import { UIRenderer } from './ui-renderer.js';
 import { ConversationEngine, type ConversationContext } from './conversation-engine.js';
 import { loadIndex } from '../../store/index-store.js';
 import { configExists, loadConfig, saveConfig } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { AzureAIProvider, type DeploymentInfo } from '../../ai/providers/azure-provider.js';
 import type { RepoIndex } from '../../types/index.js';
 import type { AIConfig } from '../../ai/types.js';
 
@@ -166,14 +166,17 @@ export class SessionManager {
    * Interactive setup wizard for Azure credentials.
    *
    * Flow:
-   *  1. Prompt for endpoint (validates https://)
-   *  2. Prompt for API key (hidden password input)
-   *  3. Fetch available deployments from Azure API
-   *  4. Let user select a deployment with arrow keys
-   *  5. Save config and confirm success
+   *  1.  Prompt for endpoint (validates https://)
+   *  2.  Prompt for API key (hidden password input)
+   *  3.  Fetch all deployments from Azure API           ← retries from step 1 on failure
+   *  4.  Filter to chat-compatible models only
+   *  4a. If none compatible, print guidance and exit
+   *  5.  Arrow-key selection from compatible deployments (title: "id (model)")
+   *  6.  Validate selected deployment via a minimal chat/completions request
+   *                                                     ← retries step 5 on OperationNotSupported
+   *  7.  Save config and print confirmation
    *
-   * Retries from step 1 if the Azure request fails.
-   * Returns true if credentials were successfully configured.
+   * Returns true when credentials are saved, false if the user cancels.
    */
   async runSetupWizard(): Promise<boolean> {
     this.ui.renderSetupHeader();
@@ -181,9 +184,10 @@ export class SessionManager {
     // Prevent prompts from catching SIGINT so our Ctrl+C handler works
     prompts.override({});
 
+    // ── Outer loop: re-prompt endpoint+key on connection failure ────────────
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      // ── Step 1: Endpoint ────────────────────────────────────────────────
+      // ── Step 1: Endpoint ──────────────────────────────────────────────────
       const { endpoint } = await prompts({
         type: 'text',
         name: 'endpoint',
@@ -198,7 +202,7 @@ export class SessionManager {
         return false;
       }
 
-      // ── Step 2: API key (hidden) ─────────────────────────────────────────
+      // ── Step 2: API key (hidden) ──────────────────────────────────────────
       const { apiKey } = await prompts({
         type: 'password',
         name: 'apiKey',
@@ -212,14 +216,14 @@ export class SessionManager {
 
       const cleanEndpoint = endpoint.replace(/\/$/, '');
 
-      // ── Step 3: Fetch deployments ────────────────────────────────────────
+      // ── Step 3: Fetch deployments ─────────────────────────────────────────
       console.log();
-      const spinner = this.ui.renderThinking();
-      spinner.text = 'Fetching deployments…';
+      const fetchSpinner = this.ui.renderThinking();
+      fetchSpinner.text = 'Fetching deployments…';
 
-      let deploymentIds: string[];
+      let allDeployments: DeploymentInfo[];
       try {
-        deploymentIds = await AzureAIProvider.fetchDeployments(cleanEndpoint, apiKey);
+        allDeployments = await AzureAIProvider.fetchDeployments(cleanEndpoint, apiKey);
         this.ui.stopSpinner(true);
       } catch {
         this.ui.stopSpinner(false, 'Azure connection failed');
@@ -234,47 +238,93 @@ export class SessionManager {
 
         if (retry) {
           console.log();
-          continue;
+          continue; // outer loop — re-prompt endpoint + key
         }
         return false;
       }
 
-      if (deploymentIds.length === 0) {
+      if (allDeployments.length === 0) {
         this.ui.renderError('No deployments found in this Azure resource.');
         return false;
       }
 
-      // ── Step 4: Select deployment ────────────────────────────────────────
-      const { deployment } = await prompts({
-        type: 'select',
-        name: 'deployment',
-        message: 'Select a model deployment',
-        choices: deploymentIds.map((id) => ({ title: id, value: id })),
-      });
+      // ── Step 4: Filter to chat-compatible models ──────────────────────────
+      const deployments = AzureAIProvider.filterChatCompatible(allDeployments);
 
-      if (!deployment) {
-        this.ui.renderError('Setup cancelled.');
+      if (deployments.length === 0) {
+        console.log();
+        console.log(`  ${chalk.red('✖')}  No compatible chat models found.`);
+        console.log();
+        console.log('  Create a deployment in Azure AI Foundry using one of:');
+        console.log(
+          `  ${chalk.cyan('gpt-4o')}  ${chalk.cyan('gpt-4.1')}  ${chalk.cyan('gpt-4o-mini')}`,
+        );
+        console.log();
+        console.log(`  Then rerun: ${chalk.white('koda login')}`);
+        console.log();
         return false;
       }
 
-      // ── Step 5: Save config ──────────────────────────────────────────────
-      const config: AIConfig = {
-        provider: 'azure',
-        endpoint: cleanEndpoint,
-        apiKey,
-        model: deployment,
-        apiVersion: '2024-05-01-preview',
-      };
+      // ── Inner loop: model selection + validation (retry stays on same credentials)
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        // ── Step 5: Arrow-key deployment selection ──────────────────────────
+        const { deployment } = await prompts({
+          type: 'select',
+          name: 'deployment',
+          message: 'Select a model deployment',
+          choices: deployments.map((d) => ({
+            title: `${d.id} (${d.model})`,
+            value: d.id,
+          })),
+        });
 
-      await saveConfig(config);
+        if (!deployment) {
+          this.ui.renderError('Setup cancelled.');
+          return false;
+        }
 
-      // ── Step 6: Confirmation ─────────────────────────────────────────────
-      console.log();
-      console.log(`  ${chalk.green('✔')} Azure connection successful`);
-      console.log(`  ${chalk.green('✔')} Model selected: ${chalk.cyan(deployment)}`);
-      console.log();
+        // ── Step 6: Validate the selected deployment ────────────────────────
+        console.log();
+        const validateSpinner = this.ui.renderThinking();
+        validateSpinner.text = 'Validating deployment…';
 
-      return true;
+        try {
+          await AzureAIProvider.validateChatDeployment(cleanEndpoint, apiKey, deployment);
+          this.ui.stopSpinner(true);
+        } catch {
+          this.ui.stopSpinner(false, 'Selected model does not support chat completions.');
+          console.log();
+
+          const { retryModel } = await prompts({
+            type: 'confirm',
+            name: 'retryModel',
+            message: 'Retry model selection?',
+            initial: true,
+          });
+
+          if (retryModel) continue; // inner loop — re-show deployment selector
+          return false;
+        }
+
+        // ── Step 7: Save config ───────────────────────────────────────────
+        const config: AIConfig = {
+          provider: 'azure',
+          endpoint: cleanEndpoint,
+          apiKey,
+          model: deployment,
+          apiVersion: '2024-05-01-preview',
+        };
+
+        await saveConfig(config);
+
+        console.log();
+        console.log(`  ${chalk.green('✔')} Azure connection successful`);
+        console.log(`  ${chalk.green('✔')} Model selected: ${chalk.cyan(deployment)}`);
+        console.log();
+
+        return true;
+      }
     }
   }
 

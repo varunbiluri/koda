@@ -8,6 +8,33 @@ import type {
 } from '../types.js';
 import { logger } from '../../utils/logger.js';
 
+/** Shape returned by fetchDeployments — both the deployment id and the underlying model name. */
+export interface DeploymentInfo {
+  id: string;
+  model: string;
+}
+
+/**
+ * Models that support the /chat/completions endpoint.
+ * Matched against the `model` field returned by Azure (not the deployment id).
+ */
+export const CHAT_ALLOWED_PATTERNS: RegExp[] = [
+  /^gpt-4/,
+  /^gpt-35/,
+  /^o1/,
+  /^o3/,
+];
+
+/** Model name fragments that indicate the deployment is NOT a chat model. */
+export const CHAT_BLOCKED_PATTERNS: RegExp[] = [
+  /codex/i,
+  /embedding/i,
+  /image/i,
+  /whisper/i,
+  /dall-e/i,
+  /tts/i,
+];
+
 export class AzureAIProvider implements AIProvider {
   private endpoint: string;
   private apiKey: string;
@@ -30,14 +57,15 @@ export class AzureAIProvider implements AIProvider {
   }
 
   /**
-   * Fetch all deployment IDs from the Azure OpenAI resource.
-   * Used by the setup wizard before a model has been chosen.
+   * Fetch all deployments from the Azure OpenAI resource.
+   * Returns both the deployment id and the underlying model name so the wizard
+   * can filter by chat compatibility before presenting choices to the user.
    */
   static async fetchDeployments(
     endpoint: string,
     apiKey: string,
     apiVersion = '2024-05-01-preview',
-  ): Promise<string[]> {
+  ): Promise<DeploymentInfo[]> {
     const base = endpoint.replace(/\/$/, '');
     const url = `${base}/openai/deployments?api-version=${apiVersion}`;
     const response = await fetch(url, {
@@ -47,8 +75,47 @@ export class AzureAIProvider implements AIProvider {
     if (!response.ok) {
       throw new Error(`Azure API error: ${response.status} ${response.statusText}`);
     }
-    const data = (await response.json()) as { data?: Array<{ id: string }> };
-    return (data.data ?? []).map((d) => d.id);
+    const data = (await response.json()) as { data?: Array<{ id: string; model?: string }> };
+    return (data.data ?? []).map((d) => ({ id: d.id, model: d.model ?? d.id }));
+  }
+
+  /**
+   * Return only deployments whose underlying model supports /chat/completions.
+   * Rejects embeddings, codex, image-generation, whisper, TTS, and DALL-E deployments.
+   */
+  static filterChatCompatible(deployments: DeploymentInfo[]): DeploymentInfo[] {
+    return deployments.filter(
+      (d) =>
+        CHAT_ALLOWED_PATTERNS.some((p) => p.test(d.model)) &&
+        !CHAT_BLOCKED_PATTERNS.some((p) => p.test(d.model)),
+    );
+  }
+
+  /**
+   * Validate that a specific deployment can handle chat/completions requests.
+   * Sends a minimal single-token request; throws if the model rejects it
+   * (e.g. OperationNotSupported for non-chat models).
+   */
+  static async validateChatDeployment(
+    endpoint: string,
+    apiKey: string,
+    deploymentId: string,
+    apiVersion = '2024-05-01-preview',
+  ): Promise<void> {
+    const base = endpoint.replace(/\/$/, '');
+    const url = `${base}/openai/deployments/${deploymentId}/chat/completions?api-version=${apiVersion}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'test' }],
+        max_tokens: 1,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Azure API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`);
+    }
   }
 
   /** Lightweight connection test — sends a minimal request to the deployment endpoint. */

@@ -1,5 +1,8 @@
 import { randomUUID } from 'crypto';
+import chalk from 'chalk';
+import prompts from 'prompts';
 import { PatchApplier } from '../patch/patch-applier.js';
+import { DiffRenderer } from './diff-renderer.js';
 import type { FilePatch, PatchResult } from '../patch/types.js';
 
 export interface PreviewFileMeta {
@@ -66,5 +69,42 @@ export class PatchPreview {
 
   hasPending(previewId: string): boolean {
     return pending.has(previewId);
+  }
+
+  /**
+   * Show a colored diff of all patches, then prompt the user to apply or discard.
+   * Returns the PatchResult array on approval, or null if the user declines.
+   */
+  async interactiveApprove(previewId: string): Promise<PatchResult[] | null> {
+    const entry = pending.get(previewId);
+    if (!entry) throw new Error(`No pending preview with id: ${previewId}`);
+
+    const renderer = new DiffRenderer();
+
+    console.log();
+    console.log('  ' + chalk.bold('Proposed changes:'));
+    console.log();
+
+    for (const patch of entry.patches) {
+      console.log(renderer.renderToTerminal(patch));
+      console.log();
+    }
+
+    const { choice } = await prompts({
+      type: 'select',
+      name: 'choice',
+      message: 'Apply patch?',
+      choices: [
+        { title: 'Yes', value: 'yes' },
+        { title: 'No', value: 'no' },
+      ],
+    });
+
+    if (!choice || choice === 'no') {
+      await this.reject(previewId);
+      return null;
+    }
+
+    return this.approve(previewId);
   }
 }
