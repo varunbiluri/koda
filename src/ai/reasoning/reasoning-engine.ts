@@ -29,6 +29,13 @@ export interface ChatContext {
   fileCount: number;
 }
 
+/** Execution metrics returned by chat(). */
+export interface ChatMetrics {
+  tools: number;
+  tokens: number;
+  duration: number;
+}
+
 export class ReasoningEngine {
   private queryEngine: QueryEngine | null;
   private provider: AIProvider;
@@ -210,7 +217,11 @@ export class ReasoningEngine {
     onChunk: (chunk: string) => void,
     onStage?: (message: string) => void,
     onPlan?: (steps: string[]) => void,
-  ): Promise<void> {
+  ): Promise<ChatMetrics> {
+    const startTime = Date.now();
+    let toolCount = 0;
+    let totalTokens = 0;
+
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
 
@@ -263,6 +274,9 @@ export class ReasoningEngine {
           temperature: 0.2,
           max_tokens: 300,
         });
+        if (planResponse.usage) {
+          totalTokens += (planResponse.usage.prompt_tokens ?? 0) + (planResponse.usage.completion_tokens ?? 0);
+        }
         const planText = planResponse.choices[0]?.message?.content ?? '';
         const steps = parsePlanSteps(planText);
         if (steps.length >= 2 && onPlan) {
@@ -291,6 +305,10 @@ export class ReasoningEngine {
         tools,
         tool_choice: 'auto',
       });
+
+      if (response.usage) {
+        totalTokens += (response.usage.prompt_tokens ?? 0) + (response.usage.completion_tokens ?? 0);
+      }
 
       const choice = response.choices[0];
       if (!choice) break;
@@ -329,6 +347,7 @@ export class ReasoningEngine {
           logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
           // Detailed stage message emitted inside execute() (Problem 4)
           const result = await registry.execute(toolName, args, onStage);
+          toolCount++;
 
           loopMessages.push({
             role: 'tool',
@@ -339,9 +358,13 @@ export class ReasoningEngine {
       } else {
         onStage?.('✏  generating response');
         onChunk(message.content ?? '');
-        return;
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        return { tools: toolCount, tokens: totalTokens, duration };
       }
     }
+
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    return { tools: toolCount, tokens: totalTokens, duration };
   }
 }
 
