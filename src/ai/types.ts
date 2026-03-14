@@ -1,6 +1,26 @@
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string; // JSON-encoded argument object
+  };
+}
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string; // present on role:'tool' messages
+}
+
+export interface ToolDefinitionForAI {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: object;
+  };
 }
 
 export interface ChatCompletionRequest {
@@ -8,6 +28,8 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
+  tools?: ToolDefinitionForAI[];
+  tool_choice?: 'auto' | 'none' | 'required';
 }
 
 export interface ChatCompletionResponse {

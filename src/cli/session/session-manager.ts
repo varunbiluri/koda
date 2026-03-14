@@ -80,7 +80,7 @@ export class SessionManager {
 
     // 7. Start conversation loop
     this.ui.renderWelcome();
-    await this.loop({ rootPath, index, hasConfig: await configExists() });
+    await this.loop({ rootPath, index, hasConfig: await configExists(), branch });
   }
 
   private async loop(ctx: ConversationContext): Promise<void> {
