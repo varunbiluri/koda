@@ -15,12 +15,13 @@ export interface ProgressStage {
 }
 
 const STAGES: Record<string, ProgressStage> = {
-  analyzing: { icon: '🔍', label: 'analyzing repository' },
-  planning: { icon: '🧠', label: 'planning execution' },
-  running: { icon: '🤖', label: 'running agents' },
-  testing: { icon: '🧪', label: 'running tests' },
-  applying: { icon: '📝', label: 'applying changes' },
-  done: { icon: '✔', label: 'completed' },
+  analyzing:   { icon: '🔍', label: 'analyzing repository' },
+  planning:    { icon: '🧠', label: 'planning execution' },
+  thinking:    { icon: '🧠', label: 'thinking' },
+  running:     { icon: '🤖', label: 'running agents' },
+  testing:     { icon: '🧪', label: 'running tests' },
+  applying:    { icon: '📝', label: 'applying changes' },
+  generating:  { icon: '✏', label: 'generating response' },
 };
 
 /**
@@ -70,7 +71,11 @@ export class UIRenderer {
   stopSpinner(success = true, message?: string): void {
     if (!this.spinner) return;
     if (success) {
-      this.spinner.succeed(message ? chalk.green(message) : chalk.green('done'));
+      if (message) {
+        this.spinner.succeed(chalk.green(message));
+      } else {
+        this.spinner.stop(); // silent — stage messages carry the progress story
+      }
     } else {
       this.spinner.fail(message ? chalk.red(message) : chalk.red('failed'));
     }
