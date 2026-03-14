@@ -1,12 +1,11 @@
+import * as path from 'node:path';
 import chalk from 'chalk';
-import { detectIntent, type DetectedIntent } from './intent-detector.js';
+import { detectIntent } from './intent-detector.js';
 import { UIRenderer } from './ui-renderer.js';
-import { loadIndex } from '../../store/index-store.js';
 import { loadIndexMetadata } from '../../store/index-store.js';
 import { configExists, loadConfig } from '../../ai/config-store.js';
 import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
-import { ExecutionEngine } from '../../execution/execution-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
 import type { RepoIndex } from '../../types/index.js';
 
@@ -14,6 +13,7 @@ export interface ConversationContext {
   rootPath: string;
   index: RepoIndex | null;
   hasConfig: boolean;
+  branch?: string;
 }
 
 export interface ConversationResponse {
@@ -23,7 +23,17 @@ export interface ConversationResponse {
 }
 
 /**
- * ConversationEngine — routes detected intents to the correct Koda pipeline.
+ * ConversationEngine — AI-first conversational interface.
+ *
+ * Routing priority (fastest / cheapest check first):
+ *   1. quit / exit        → immediate exit (no AI)
+ *   2. help / ?           → static help text (no AI)
+ *   3. status             → index metadata (no AI)
+ *   4. greeting           → deterministic intro (no AI)
+ *   5. hasConfig = true   → AI-first: ReasoningEngine.chat() with full tool set
+ *   6. hasConfig = false
+ *      + index present    → local vector search fallback
+ *      + no index         → error with guidance
  */
 export class ConversationEngine {
   private ui: UIRenderer;
@@ -33,39 +43,78 @@ export class ConversationEngine {
   }
 
   async process(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
-    const detected = detectIntent(input);
+    const normalized = input.trim().toLowerCase();
 
-    switch (detected.intent) {
-      case 'quit':
-        return { handled: true, shouldQuit: true };
-
-      case 'greeting':
-        return this.handleGreeting();
-
-      case 'help':
-        this.ui.renderHelp();
-        return { handled: true, shouldQuit: false };
-
-      case 'status':
-        return this.handleStatus(ctx);
-
-      case 'explain':
-      case 'search':
-        return this.handleExplain(detected, ctx);
-
-      case 'build':
-        return this.handleBuild(detected, ctx);
-
-      case 'fix':
-        return this.handleFix(detected, ctx);
-
-      case 'refactor':
-        return this.handleRefactor(detected, ctx);
-
-      default:
-        return this.handleExplain(detected, ctx);
+    // ── 1. Quit ──────────────────────────────────────────────────────────────
+    if (['quit', 'exit', 'bye', 'q', ':q', 'goodbye'].includes(normalized)) {
+      return { handled: true, shouldQuit: true };
     }
+
+    // ── 2. Help ──────────────────────────────────────────────────────────────
+    if (normalized === 'help' || normalized === '?') {
+      this.ui.renderHelp();
+      return { handled: true, shouldQuit: false };
+    }
+
+    // ── 3. Status (index metadata — no AI needed) ────────────────────────────
+    if (normalized === 'status') {
+      return this.handleStatus(ctx);
+    }
+
+    // ── 4. Greeting (deterministic — avoid wasting an AI call) ───────────────
+    const detected = detectIntent(input);
+    if (detected.intent === 'greeting') {
+      return this.handleGreeting();
+    }
+
+    // ── 5. AI-first path ─────────────────────────────────────────────────────
+    if (ctx.hasConfig) {
+      return this.handleWithAI(input, ctx);
+    }
+
+    // ── 6. No AI config ──────────────────────────────────────────────────────
+    if (!ctx.index) {
+      this.ui.renderError(
+        'No AI configuration and no repository index.',
+        'Run `koda login` to configure AI, or `koda init` to index the repository.',
+      );
+      return { handled: true, shouldQuit: false };
+    }
+
+    return this.handleLocalSearch(input, ctx.index);
   }
+
+  // ── AI-first handler ───────────────────────────────────────────────────────
+
+  private async handleWithAI(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
+    this.ui.renderThinking();
+
+    try {
+      const config = await loadConfig();
+      const provider = new AzureAIProvider(config);
+      const engine = new ReasoningEngine(ctx.index, provider);
+
+      await engine.chat(
+        input,
+        {
+          repoName: path.basename(ctx.rootPath),
+          branch:   ctx.branch ?? 'unknown',
+          rootPath: ctx.rootPath,
+          fileCount: ctx.index?.metadata.fileCount ?? 0,
+        },
+        (chunk) => this.ui.renderStreamChunk(chunk),
+        (stage) => this.ui.stream(stage),
+      );
+
+      this.ui.renderStreamEnd();
+    } catch (err) {
+      this.ui.stopSpinner(false, (err as Error).message);
+    }
+
+    return { handled: true, shouldQuit: false };
+  }
+
+  // ── Fast-path handlers ────────────────────────────────────────────────────
 
   private handleGreeting(): ConversationResponse {
     console.log();
@@ -74,8 +123,8 @@ export class ConversationEngine {
     console.log('  You can ask me to:');
     console.log();
     console.log(`  ${chalk.cyan('•')} ${chalk.white('explain')} ${chalk.gray('code or architecture')}`);
-    console.log(`  ${chalk.cyan('•')} ${chalk.white('add')} ${chalk.gray('new features')}`);
-    console.log(`  ${chalk.cyan('•')} ${chalk.white('fix')} ${chalk.gray('bugs and errors')}`);
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('add')}     ${chalk.gray('new features')}`);
+    console.log(`  ${chalk.cyan('•')} ${chalk.white('fix')}     ${chalk.gray('bugs and errors')}`);
     console.log(`  ${chalk.cyan('•')} ${chalk.white('refactor')} ${chalk.gray('existing modules')}`);
     console.log();
     console.log(`  ${chalk.gray('What would you like to build?')}`);
@@ -91,7 +140,11 @@ export class ConversationEngine {
       console.log(`  ${chalk.gray('Files indexed:')} ${chalk.white(String(meta.fileCount))}`);
       console.log(`  ${chalk.gray('Code chunks:')}  ${chalk.white(String(meta.chunkCount))}`);
       console.log(`  ${chalk.gray('Dependencies:')} ${chalk.white(String(meta.edgeCount))}`);
-      console.log(`  ${chalk.gray('AI config:')}    ${hasConfig ? chalk.green('configured') : chalk.yellow('not configured (run koda login)')}`);
+      console.log(
+        `  ${chalk.gray('AI config:')}    ${
+          hasConfig ? chalk.green('configured') : chalk.yellow('not configured (run koda login)')
+        }`,
+      );
       console.log(`  ${chalk.gray('Indexed at:')}   ${chalk.white(meta.createdAt)}`);
       console.log();
     } catch {
@@ -100,68 +153,17 @@ export class ConversationEngine {
     return { handled: true, shouldQuit: false };
   }
 
-  private async handleExplain(
-    detected: DetectedIntent,
-    ctx: ConversationContext,
-  ): Promise<ConversationResponse> {
-    if (!ctx.index) {
-      this.ui.renderError('Repository not indexed.', 'Run `koda init` first.');
-      return { handled: true, shouldQuit: false };
-    }
+  // ── Local search fallback (no AI config) ─────────────────────────────────
 
-    if (!ctx.hasConfig) {
-      // Fall back to local search (no AI config)
-      return this.handleSearch(detected.subject, ctx.index, ctx);
-    }
-
-    return this.handleExplainWithAI(detected.subject, ctx.index, ctx);
-  }
-
-  private async handleExplainWithAI(
-    query: string,
-    index: RepoIndex,
-    ctx: ConversationContext,
-  ): Promise<ConversationResponse> {
-    // AI-powered analysis
-    this.ui.renderThinking();
-    this.ui.renderStage('analyzing');
-
-    try {
-      const config = await loadConfig();
-      const provider = new AzureAIProvider(config);
-      const engine = new ReasoningEngine(index, provider);
-
-      this.ui.renderStage('running');
-      this.ui.stopSpinner(true);
-
-      const meta = await engine.analyzeStream(
-        query,
-        (chunk) => {
-          this.ui.renderStreamChunk(chunk);
-        },
-      );
-
-      this.ui.renderStreamEnd();
-      this.ui.renderMeta(meta.filesAnalyzed, meta.chunksUsed, meta.contextTruncated);
-    } catch {
-      this.ui.stopSpinner(false);
-      // Fall back to local search on AI error
-      return this.handleSearch(query, index);
-    }
-
-    return { handled: true, shouldQuit: false };
-  }
-
-  private async handleSearch(query: string, index: RepoIndex, ctx?: ConversationContext): Promise<ConversationResponse> {
+  private async handleLocalSearch(query: string, index: RepoIndex): Promise<ConversationResponse> {
     const engine = new QueryEngine(index);
     const results = engine.search(query, 8);
 
     if (results.length === 0) {
-      // If AI is configured, route to reasoning engine instead of showing "no results"
-      if (ctx?.hasConfig) {
-        return this.handleExplainWithAI(query, index, ctx);
-      }
-      this.ui.renderError(`No results found for "${query}".`);
+      this.ui.renderError(
+        `No results found for "${query}".`,
+        'Run `koda login` to enable AI-powered answers, or try a different search term.',
+      );
       return { handled: true, shouldQuit: false };
     }
 
@@ -189,105 +191,4 @@ export class ConversationEngine {
 
     return { handled: true, shouldQuit: false };
   }
-
-  private async handleBuild(
-    detected: DetectedIntent,
-    ctx: ConversationContext,
-  ): Promise<ConversationResponse> {
-    if (!ctx.hasConfig) {
-      this.ui.renderError(
-        'AI configuration required for build tasks.',
-        'Run `koda login` to configure Azure credentials.',
-      );
-      return { handled: true, shouldQuit: false };
-    }
-
-    const task = detected.subject;
-    console.log();
-
-    // Show plan first
-    this.ui.renderPlan([
-      `Analyze repository structure for: ${task}`,
-      'Plan implementation steps',
-      'Run coding agents',
-      'Run tests and verification',
-      'Show patch preview',
-    ]);
-
-    const confirmed = await askConfirm('  Proceed? (y/n): ');
-    if (!confirmed) {
-      this.ui.renderInfo('Cancelled.');
-      return { handled: true, shouldQuit: false };
-    }
-
-    this.ui.renderThinking();
-    this.ui.renderStage('analyzing');
-
-    try {
-      const engine = new ExecutionEngine();
-      this.ui.renderStage('planning');
-      this.ui.renderStage('running');
-      this.ui.renderStage('testing');
-
-      const report = await engine.execute(task, ctx.rootPath, {});
-
-      this.ui.stopSpinner(report.success);
-
-      if (report.success) {
-        this.ui.renderSuccess(`Task completed: ${task}`);
-      } else {
-        this.ui.renderError('Task completed with errors.');
-      }
-
-      if (report.filesModified.length > 0) {
-        console.log(`  ${chalk.bold('Modified files:')}`);
-        for (const f of report.filesModified) {
-          console.log(`    ${chalk.cyan('·')} ${f}`);
-        }
-        console.log();
-      }
-
-      if (report.errors.length > 0) {
-        for (const e of report.errors) {
-          console.log(`  ${chalk.red('✖')} ${e}`);
-        }
-        console.log();
-      }
-    } catch (err) {
-      this.ui.stopSpinner(false, (err as Error).message);
-    }
-
-    return { handled: true, shouldQuit: false };
-  }
-
-  private async handleFix(
-    detected: DetectedIntent,
-    ctx: ConversationContext,
-  ): Promise<ConversationResponse> {
-    return this.handleBuild(
-      { ...detected, subject: `Fix the following issue: ${detected.subject}` },
-      ctx,
-    );
-  }
-
-  private async handleRefactor(
-    detected: DetectedIntent,
-    ctx: ConversationContext,
-  ): Promise<ConversationResponse> {
-    return this.handleBuild(
-      { ...detected, subject: `Refactor the following: ${detected.subject}` },
-      ctx,
-    );
-  }
-}
-
-async function askConfirm(prompt: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    process.stdout.write(prompt);
-    process.stdin.setEncoding('utf8');
-    process.stdin.once('data', (data: string) => {
-      const answer = data.toString().trim().toLowerCase();
-      resolve(answer === 'y' || answer === 'yes');
-    });
-  });
 }
