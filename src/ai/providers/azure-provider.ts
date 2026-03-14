@@ -21,8 +21,53 @@ export class AzureAIProvider implements AIProvider {
     this.apiVersion = config.apiVersion ?? '2024-05-01-preview';
   }
 
+  private getDeploymentUrl(): string {
+    return `${this.endpoint}/openai/deployments/${this.model}/chat/completions?api-version=${this.apiVersion}`;
+  }
+
   private getUrl(path: string): string {
     return `${this.endpoint}${path}?api-version=${this.apiVersion}`;
+  }
+
+  /**
+   * Fetch all deployment IDs from the Azure OpenAI resource.
+   * Used by the setup wizard before a model has been chosen.
+   */
+  static async fetchDeployments(
+    endpoint: string,
+    apiKey: string,
+    apiVersion = '2024-05-01-preview',
+  ): Promise<string[]> {
+    const base = endpoint.replace(/\/$/, '');
+    const url = `${base}/openai/deployments?api-version=${apiVersion}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'api-key': apiKey },
+    });
+    if (!response.ok) {
+      throw new Error(`Azure API error: ${response.status} ${response.statusText}`);
+    }
+    const data = (await response.json()) as { data?: Array<{ id: string }> };
+    return (data.data ?? []).map((d) => d.id);
+  }
+
+  /** Lightweight connection test — sends a minimal request to the deployment endpoint. */
+  async testConnection(): Promise<void> {
+    const url = this.getDeploymentUrl();
+    logger.debug(`Testing connection to ${url}`);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      logger.error(`Azure API error: ${response.status} ${text}`);
+      throw new Error(`Azure API error: ${response.status} ${response.statusText}`);
+    }
   }
 
   private getHeaders(stream: boolean = false): Record<string, string> {
@@ -37,7 +82,7 @@ export class AzureAIProvider implements AIProvider {
   }
 
   async sendChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const url = this.getUrl(`/openai/deployments/${this.model}/chat/completions`);
+    const url = this.getDeploymentUrl();
 
     logger.debug(`Azure API request to ${url}`);
 
@@ -64,7 +109,7 @@ export class AzureAIProvider implements AIProvider {
     request: ChatCompletionRequest,
     onChunk: (chunk: string) => void,
   ): Promise<void> {
-    const url = this.getUrl(`/openai/deployments/${this.model}/chat/completions`);
+    const url = this.getDeploymentUrl();
 
     logger.debug(`Azure API streaming request to ${url}`);
 
