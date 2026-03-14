@@ -56,7 +56,7 @@ vi.mock('../../../src/ai/reasoning/reasoning-engine.js', () => {
     });
     // chat() simulates a single-round AI answer (no tools)
     chat = vi.fn().mockImplementation(
-      async (_input: unknown, _ctx: unknown, onChunk: (s: string) => void) => {
+      async (_input: unknown, _ctx: unknown, _history: unknown, onChunk: (s: string) => void) => {
         onChunk('I am Koda, your AI software engineer.');
       },
     );
