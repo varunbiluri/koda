@@ -170,7 +170,11 @@ export class ToolRegistry {
         const filePath = String(args['path'] ?? '');
         onStage?.(`📖  reading ${filePath}`);
         const result = await readFile(filePath, this.rootPath);
-        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+        if (!result.success) return `Error: ${result.error}`;
+        const content = result.data ?? '';
+        return content.length > 8000
+          ? content.slice(0, 8000) + '\n\n[...truncated — file exceeds 8000 characters]'
+          : content;
       }
 
       case 'search_code': {
