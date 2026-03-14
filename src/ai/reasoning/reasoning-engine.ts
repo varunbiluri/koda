@@ -191,36 +191,101 @@ export class ReasoningEngine {
   /**
    * AI-first conversational interface with automatic tool usage.
    *
-   * The model receives the full tool catalogue and decides when to call
-   * read_file, search_code, git_branch, etc.  The loop continues until
-   * the model produces a final text answer (finish_reason !== 'tool_calls').
+   * Pipeline:
+   *   1. Vector search on the user query (Problem 6 — automatic code retrieval)
+   *   2. Planning call for action-verb queries (Problem 3)
+   *   3. Tool-calling loop, capped at MAX_ROUNDS with per-tool repeat guard (Problem 2)
    *
-   * @param input   - Raw user message
+   * @param input   - Raw user message (also present as last entry in history)
    * @param context - Repository metadata injected into the system prompt
+   * @param history - Rolling conversation history (last ~20 messages)
    * @param onChunk - Called once with the final answer text
-   * @param onStage - Optional progress indicator callback
+   * @param onStage - Optional progress indicator (generic stage messages)
+   * @param onPlan  - Optional callback with parsed plan steps to display
    */
   async chat(
     input: string,
     context: ChatContext,
+    history: ChatMessage[],
     onChunk: (chunk: string) => void,
     onStage?: (message: string) => void,
+    onPlan?: (steps: string[]) => void,
   ): Promise<void> {
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
 
-    const messages: ChatMessage[] = [
-      { role: 'system', content: buildChatSystemPrompt(context) },
-      { role: 'user', content: input },
+    // ── Step 1: Automatic code retrieval (Problem 6) ─────────────────────────
+    let relevantContext = '';
+    const qe = this.queryEngine;
+    const idx = this.index;
+    if (qe && idx) {
+      onStage?.('🔍  searching repository');
+      const hits = qe.search(input, 5);
+      if (hits.length > 0) {
+        const chunks = hits
+          .map((r) => idx.chunks.find((c) => c.id === r.chunkId))
+          .filter((c): c is NonNullable<typeof c> => c !== undefined);
+        const filePaths = Array.from(new Set(chunks.map((c) => c.filePath)));
+        const excerpts = chunks
+          .slice(0, 3)
+          .map((c) => `\`\`\`${c.language ?? ''}\n// ${c.filePath}:${c.startLine}\n${c.content.slice(0, 500)}\n\`\`\``)
+          .join('\n\n');
+        relevantContext =
+          `\n\nRelevant repository files:\n${filePaths.map((f) => `- ${f}`).join('\n')}\n\nKey code context:\n${excerpts}`;
+      }
+    }
+
+    // ── Base message thread (system prompt + trimmed history) ─────────────────
+    const trimmedHistory = history.slice(-20);
+    const baseMessages: ChatMessage[] = [
+      { role: 'system', content: buildChatSystemPrompt(context, relevantContext) },
+      ...trimmedHistory,
     ];
 
+    // ── Step 2: Planning (Problem 3) ──────────────────────────────────────────
+    const isComplexTask =
+      /\b(create|build|implement|analyze|write|generate|fix|refactor|add|update|make|design|document)\b/i.test(input) &&
+      input.trim().split(/\s+/).length >= 3;
+
+    let loopMessages: ChatMessage[] = [...baseMessages];
+
+    if (isComplexTask) {
+      try {
+        const planResponse = await this.provider.sendChatCompletion({
+          messages: [
+            ...baseMessages,
+            {
+              role: 'user',
+              content:
+                'Before starting, outline your step-by-step approach. Number each step. Be brief.',
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 300,
+        });
+        const planText = planResponse.choices[0]?.message?.content ?? '';
+        const steps = parsePlanSteps(planText);
+        if (steps.length >= 2 && onPlan) {
+          onPlan(steps);
+        }
+        if (planText) {
+          // Include the plan as context for the tool execution loop
+          loopMessages = [...baseMessages, { role: 'assistant', content: planText }];
+        }
+      } catch {
+        // Planning failed — proceed without plan
+      }
+    }
+
+    // ── Step 3: Tool-calling loop (Problems 2 & 4) ────────────────────────────
     const MAX_ROUNDS = 5;
+    const toolUsage: Record<string, number> = {};
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
       onStage?.('🧠  thinking');
 
       const response = await this.provider.sendChatCompletion({
-        messages,
+        messages: loopMessages,
         temperature: 0.3,
         max_tokens: 2000,
         tools,
@@ -233,35 +298,45 @@ export class ReasoningEngine {
       const message = choice.message;
 
       if (choice.finish_reason === 'tool_calls' && message.tool_calls?.length) {
-        // Append the assistant turn (contains tool_calls)
-        messages.push({
+        loopMessages.push({
           role: 'assistant',
           content: message.content ?? null,
           tool_calls: message.tool_calls,
         });
 
-        // Execute each requested tool and append results
         for (const toolCall of message.tool_calls) {
-          onStage?.(toolStageMessage(toolCall.function.name));
-          logger.debug(`Tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);
+          const toolName = toolCall.function.name;
+          toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1;
+
+          // Tool loop protection (Problem 2)
+          if (toolUsage[toolName] > 3) {
+            logger.warn(`Tool loop protection: ${toolName} called ${toolUsage[toolName]} times`);
+            loopMessages.push({
+              role: 'tool',
+              content: `Tool ${toolName} stopped — called too many times. Summarise what you have so far.`,
+              tool_call_id: toolCall.id,
+            });
+            continue;
+          }
 
           let args: Record<string, unknown> = {};
           try {
             args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
           } catch {
-            // leave args empty — registry.execute handles missing args gracefully
+            // empty args — execute() handles gracefully
           }
 
-          const result = await registry.execute(toolCall.function.name, args);
+          logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
+          // Detailed stage message emitted inside execute() (Problem 4)
+          const result = await registry.execute(toolName, args, onStage);
 
-          messages.push({
+          loopMessages.push({
             role: 'tool',
             content: result,
             tool_call_id: toolCall.id,
           });
         }
       } else {
-        // Final answer — emit and return
         onStage?.('✏  generating response');
         onChunk(message.content ?? '');
         return;
@@ -272,32 +347,41 @@ export class ReasoningEngine {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildChatSystemPrompt(ctx: ChatContext): string {
-  return [
-    'You are Koda, an AI software engineer assistant.',
+function buildChatSystemPrompt(ctx: ChatContext, relevantContext = ''): string {
+  const parts = [
+    'You are Koda, a senior software engineer working inside this repository.',
+    '',
+    'You collaborate with the user on this codebase.',
+    '',
+    'Guidelines:',
+    '• be concise and technical',
+    '• avoid assistant-style phrases',
+    '• investigate using tools instead of guessing',
+    '• prefer direct answers',
+    '• behave like an experienced developer reviewing the repository',
+    '• maintain awareness of previous conversation steps',
     '',
     `Repository: ${ctx.repoName}`,
     `Branch:     ${ctx.branch}`,
     `Directory:  ${ctx.rootPath}`,
     `Files indexed: ${ctx.fileCount}`,
-    '',
-    'You have tools to explore the repository, read files, inspect git state, and run safe commands.',
-    'Use them whenever you need accurate information to answer the user.',
-    'For simple conversational questions answer directly without calling any tools.',
-  ].join('\n');
+  ];
+  if (relevantContext) {
+    parts.push(relevantContext);
+  }
+  return parts.join('\n');
 }
 
-function toolStageMessage(toolName: string): string {
-  switch (toolName) {
-    case 'read_file':    return '🔍  reading files';
-    case 'search_code': return '🔍  searching code';
-    case 'list_files':  return '📁  listing files';
-    case 'git_branch':
-    case 'git_status':
-    case 'git_diff':
-    case 'git_log':     return '🌿  checking git';
-    case 'run_terminal': return '⚡  running command';
-    case 'write_file':  return '✏  writing file';
-    default:            return `🔧  using ${toolName}`;
+/**
+ * Parse a numbered or bulleted plan from model text.
+ * Returns an empty array if fewer than 2 steps are found.
+ */
+function parsePlanSteps(text: string): string[] {
+  const steps: string[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    const match = line.match(/^(?:step\s*\d+[.:):\s]+|\d+[.)]\s+|[-•*]\s+)(.+)/i);
+    if (match?.[1]) steps.push(match[1].trim());
   }
+  return steps.length >= 2 ? steps : [];
 }
