@@ -51,7 +51,8 @@
       "Bash(find node_modules -name \"package.json\" -exec grep -l '\"@dotenvx/dotenvx\"' {} \\\\; 2>/dev/null | head -5; find node_modules -name \"package.json\" | xargs grep -l '\"version\": \"17' 2>/dev/null | head -5)",
       "Bash(cat package.json | grep -E '\"prompts\"|\"dependencies\"' | head -5; cat package.json | python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}, indent=2\\)\\)\" 2>/dev/null | grep -E 'prompts|inquirer|chalk|ora' | head -10)",
       "Bash(ls /Users/varunbilluri/AI/*.md 2>/dev/null; ls /Users/varunbilluri/AI/docs/ 2>/dev/null)",
-      "Bash(ls /Users/varunbilluri/AI/*.md)"
+      "Bash(ls /Users/varunbilluri/AI/*.md)",
+      "Bash(find /Users/varunbilluri/AI/src/tools -type f -name \"*.ts\" 2>/dev/null | head -20)"
     ]
   }
 }

@@ -47,6 +47,11 @@ vi.mock('../../../src/ai/reasoning/reasoning-engine.js', () => {
       chunksUsed: 3,
       contextTruncated: false,
     });
+    chat = vi.fn().mockImplementation(
+      async (_input: unknown, _ctx: unknown, onChunk: (s: string) => void) => {
+        onChunk('AI response');
+      },
+    );
   }
   return { ReasoningEngine };
 });
@@ -132,10 +137,10 @@ describe('ConversationEngine greeting handler', () => {
   });
 });
 
-// ── 3. Search → AI reasoning fallback ────────────────────────────────────────
+// ── 3. AI-first path ─────────────────────────────────────────────────────────
 
-describe('search fallback to AI reasoning', () => {
-  it('calls AI reasoning when QueryEngine returns no results and hasConfig=true', async () => {
+describe('AI-first routing', () => {
+  it('takes AI path when hasConfig=true and calls renderStreamEnd', async () => {
     const ui = makeUI();
     const engine = new ConversationEngine(ui);
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -143,20 +148,44 @@ describe('search fallback to AI reasoning', () => {
     const ctx = makeCtx({ index: makeIndex(), hasConfig: true });
     const result = await engine.process('explain authentication', ctx);
 
-    // AI path was taken: spinner + stream lifecycle are called
-    // renderStreamEnd is only called when the AI reasoning path completes
+    // AI path always calls renderStreamEnd after chat() resolves
     expect(ui.renderStreamEnd).toHaveBeenCalled();
     expect(result.handled).toBe(true);
   });
 
-  it('shows error (not AI) when search empty and no config', async () => {
+  it('takes AI path even without an index (no koda init required)', async () => {
+    const ui = makeUI();
+    const engine = new ConversationEngine(ui);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const ctx = makeCtx({ index: null, hasConfig: true });
+    const result = await engine.process('who are you', ctx);
+
+    expect(ui.renderStreamEnd).toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+  });
+
+  it('shows error (not AI) when no config and no index', async () => {
+    const ui = makeUI();
+    const engine = new ConversationEngine(ui);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const ctx = makeCtx({ index: null, hasConfig: false });
+    await engine.process('explain authentication', ctx);
+
+    expect(ui.renderError).toHaveBeenCalled();
+  });
+
+  it('falls back to local search when no config but index exists', async () => {
     const ui = makeUI();
     const engine = new ConversationEngine(ui);
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const ctx = makeCtx({ index: makeIndex(), hasConfig: false });
-    await engine.process('explain authentication', ctx);
+    const result = await engine.process('explain authentication', ctx);
 
+    // Empty QueryEngine mock → renderError with "no results" message
+    expect(result.handled).toBe(true);
     expect(ui.renderError).toHaveBeenCalled();
   });
 });
