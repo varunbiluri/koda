@@ -1,6 +1,7 @@
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ToolResult } from './types.js';
+import { PermissionManager } from '../security/permission-manager.js';
 
 const execAsync = promisify(exec);
 
@@ -15,6 +16,15 @@ export async function runTerminal(
   rootPath: string,
   timeout: number = 30000,
 ): Promise<ToolResult<TerminalOutput>> {
+  const permitted = await PermissionManager.check(command);
+  if (!permitted) {
+    return {
+      success: false,
+      error: `Command cancelled by user: ${command}`,
+      data: { stdout: '', stderr: '', exitCode: 1 },
+    };
+  }
+
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: rootPath,
