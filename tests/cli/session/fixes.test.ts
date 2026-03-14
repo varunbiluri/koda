@@ -48,7 +48,7 @@ vi.mock('../../../src/ai/reasoning/reasoning-engine.js', () => {
       contextTruncated: false,
     });
     chat = vi.fn().mockImplementation(
-      async (_input: unknown, _ctx: unknown, onChunk: (s: string) => void) => {
+      async (_input: unknown, _ctx: unknown, _history: unknown, onChunk: (s: string) => void) => {
         onChunk('AI response');
       },
     );

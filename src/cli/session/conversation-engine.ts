@@ -7,6 +7,7 @@ import { configExists, loadConfig } from '../../ai/config-store.js';
 import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
+import type { ChatMessage } from '../../ai/types.js';
 import type { RepoIndex } from '../../types/index.js';
 
 export interface ConversationContext {
@@ -37,6 +38,8 @@ export interface ConversationResponse {
  */
 export class ConversationEngine {
   private ui: UIRenderer;
+  /** Rolling conversation history shared across all AI turns in this session. */
+  private history: ChatMessage[] = [];
 
   constructor(ui?: UIRenderer) {
     this.ui = ui ?? new UIRenderer();
@@ -87,7 +90,12 @@ export class ConversationEngine {
   // ── AI-first handler ───────────────────────────────────────────────────────
 
   private async handleWithAI(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
+    // Record the user turn before calling AI so the history is available inside chat()
+    this.history.push({ role: 'user', content: input });
+
     this.ui.renderThinking();
+
+    let assistantResponse = '';
 
     try {
       const config = await loadConfig();
@@ -102,12 +110,27 @@ export class ConversationEngine {
           rootPath: ctx.rootPath,
           fileCount: ctx.index?.metadata.fileCount ?? 0,
         },
-        (chunk) => this.ui.renderStreamChunk(chunk),
+        this.history,
+        (chunk) => {
+          assistantResponse += chunk;
+          this.ui.renderStreamChunk(chunk);
+        },
         (stage) => this.ui.stream(stage),
+        (steps) => {
+          this.ui.stream('🧠  planning');
+          this.ui.renderPlan(steps);
+        },
       );
+
+      // Record the assistant turn so follow-up questions have context
+      if (assistantResponse) {
+        this.history.push({ role: 'assistant', content: assistantResponse });
+      }
 
       this.ui.renderStreamEnd();
     } catch (err) {
+      // Remove the optimistically-pushed user message on failure
+      this.history.pop();
       this.ui.stopSpinner(false, (err as Error).message);
     }
 
