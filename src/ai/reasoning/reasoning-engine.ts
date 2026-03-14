@@ -1,3 +1,5 @@
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { QueryEngine } from '../../search/query-engine.js';
 import type { RepoIndex } from '../../types/index.js';
 import type { AIProvider, ChatMessage } from '../types.js';
@@ -225,13 +227,31 @@ export class ReasoningEngine {
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
 
+    // ── Step 0: Load AGENTS.md if present ────────────────────────────────────
+    let agentsMdContent = '';
+    try {
+      const agentsMdPath = path.join(context.rootPath, 'AGENTS.md');
+      agentsMdContent = await fs.readFile(agentsMdPath, 'utf-8');
+    } catch {
+      // AGENTS.md not present — continue without it
+    }
+
     // ── Step 1: Automatic code retrieval (Problem 6) ─────────────────────────
     let relevantContext = '';
     const qe = this.queryEngine;
     const idx = this.index;
+
+    // Token safety guard: estimate size before retrieval
+    const TOKEN_LIMIT = 200_000;
+    let retrievalLimit = 5;
+    const baseSystemSize = (buildChatSystemPrompt(context, '', agentsMdContent)).length / 4; // rough char→token
+    if (baseSystemSize > TOKEN_LIMIT * 0.5) {
+      retrievalLimit = 2; // shrink retrieval if system prompt already large
+    }
+
     if (qe && idx) {
       onStage?.('🔍  searching repository');
-      const hits = qe.search(input, 5);
+      const hits = qe.search(input, retrievalLimit);
       if (hits.length > 0) {
         const chunks = hits
           .map((r) => idx.chunks.find((c) => c.id === r.chunkId))
@@ -249,7 +269,7 @@ export class ReasoningEngine {
     // ── Base message thread (system prompt + trimmed history) ─────────────────
     const trimmedHistory = history.slice(-20);
     const baseMessages: ChatMessage[] = [
-      { role: 'system', content: buildChatSystemPrompt(context, relevantContext) },
+      { role: 'system', content: buildChatSystemPrompt(context, relevantContext, agentsMdContent) },
       ...trimmedHistory,
     ];
 
@@ -370,7 +390,7 @@ export class ReasoningEngine {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildChatSystemPrompt(ctx: ChatContext, relevantContext = ''): string {
+function buildChatSystemPrompt(ctx: ChatContext, relevantContext = '', agentsMd = ''): string {
   const parts = [
     'You are Koda, a senior software engineer working inside this repository.',
     '',
@@ -389,6 +409,13 @@ function buildChatSystemPrompt(ctx: ChatContext, relevantContext = ''): string {
     `Directory:  ${ctx.rootPath}`,
     `Files indexed: ${ctx.fileCount}`,
   ];
+  if (agentsMd) {
+    parts.push('');
+    parts.push('## Project Knowledge (from AGENTS.md)');
+    parts.push('');
+    // Limit AGENTS.md injection to 4000 chars to avoid token explosion
+    parts.push(agentsMd.slice(0, 4000));
+  }
   if (relevantContext) {
     parts.push(relevantContext);
   }
