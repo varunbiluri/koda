@@ -1,0 +1,163 @@
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import { readFile, writeFile, listFiles } from '../tools/filesystem-tools.js';
+import { runTerminal } from '../tools/terminal-tools.js';
+import { logger } from '../utils/logger.js';
+
+export interface UntestableFunction {
+  file: string;
+  name: string;
+  startLine: number;
+}
+
+export interface TestGenResult {
+  untestedFunctions: UntestableFunction[];
+  generatedFiles: string[];
+  testsPassed: boolean;
+  testOutput: string;
+}
+
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'];
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.koda', 'tests', 'test', '__tests__']);
+
+/** Matches exported function/class/arrow-function declarations. */
+const EXPORT_PATTERN =
+  /export\s+(?:async\s+)?(?:function|class|const\s+\w+\s*=\s*(?:async\s+)?\()/;
+
+/** Simple function-name extractor. */
+const FN_NAME_PATTERN =
+  /export\s+(?:async\s+)?function\s+(\w+)|export\s+(?:default\s+)?class\s+(\w+)|export\s+const\s+(\w+)/;
+
+/**
+ * TestAgent — scans the repository for untested exports and generates
+ * Vitest test scaffolding for each one.
+ */
+export class TestAgent {
+  constructor(private readonly rootPath: string) {}
+
+  async run(): Promise<TestGenResult> {
+    const sourceFiles = await this.collectSourceFiles();
+    const untestedFunctions = await this.findUntested(sourceFiles);
+    const generatedFiles: string[] = [];
+
+    for (const fn of untestedFunctions) {
+      const testFile = this.testPathFor(fn.file);
+      // Skip if a test file already exists
+      try {
+        await fs.access(path.join(this.rootPath, testFile));
+        continue; // already exists
+      } catch {
+        // doesn't exist — generate it
+      }
+
+      const content = this.generateTestCode(fn);
+      const writeResult = await writeFile(testFile, content, this.rootPath);
+      if (writeResult.success) {
+        generatedFiles.push(testFile);
+        logger.debug(`Generated test: ${testFile}`);
+      }
+    }
+
+    // Run tests
+    const testResult = await runTerminal('pnpm test --run 2>&1 || true', this.rootPath, 60_000);
+    const testOutput = testResult.data?.stdout ?? testResult.data?.stderr ?? '';
+    const testsPassed = !testOutput.includes('FAIL') && !testOutput.includes('failed');
+
+    return { untestedFunctions, generatedFiles, testsPassed, testOutput };
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  private async collectSourceFiles(): Promise<string[]> {
+    const out: string[] = [];
+    await this.walkDir(this.rootPath, out);
+    return out;
+  }
+
+  private async walkDir(dir: string, out: string[]): Promise<void> {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await this.walkDir(full, out);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (SOURCE_EXTENSIONS.includes(ext)) {
+          // Skip test files themselves
+          if (entry.name.match(/\.(test|spec)\./)) continue;
+          out.push(path.relative(this.rootPath, full));
+        }
+      }
+    }
+  }
+
+  private async findUntested(sourceFiles: string[]): Promise<UntestableFunction[]> {
+    const results: UntestableFunction[] = [];
+
+    for (const file of sourceFiles) {
+      // Skip if a corresponding test file exists
+      const testPath = path.join(this.rootPath, this.testPathFor(file));
+      try {
+        await fs.access(testPath);
+        continue; // test file exists — skip
+      } catch {
+        // no test file
+      }
+
+      const read = await readFile(file, this.rootPath);
+      if (!read.success) continue;
+
+      const lines = (read.data ?? '').split('\n');
+      lines.forEach((line, idx) => {
+        if (EXPORT_PATTERN.test(line)) {
+          const nameMatch = FN_NAME_PATTERN.exec(line);
+          const name = nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3] ?? 'unknown';
+          results.push({ file, name, startLine: idx + 1 });
+        }
+      });
+    }
+
+    return results;
+  }
+
+  private testPathFor(sourceFile: string): string {
+    const ext = path.extname(sourceFile);
+    const base = sourceFile.slice(0, -ext.length);
+    // src/foo/bar.ts → tests/foo/bar.test.ts
+    const relative = base.startsWith('src/') ? base.slice(4) : base;
+    return `tests/${relative}.test${ext}`;
+  }
+
+  private generateTestCode(fn: UntestableFunction): string {
+    const importPath = path.relative(
+      path.dirname(path.join('tests', fn.file.replace(/^src\//, ''))),
+      fn.file.replace(/\.tsx?$/, '.js'),
+    );
+    const safePath = importPath.startsWith('.') ? importPath : `./${importPath}`;
+
+    return [
+      `import { describe, it, expect, vi } from 'vitest';`,
+      `// Auto-generated by Koda TestAgent — fill in real assertions`,
+      `// Source: ${fn.file}:${fn.startLine}`,
+      ``,
+      `describe('${fn.name}', () => {`,
+      `  it('should be defined', async () => {`,
+      `    const mod = await import('${safePath}');`,
+      `    expect(mod).toBeDefined();`,
+      `  });`,
+      ``,
+      `  it('TODO: add meaningful test', () => {`,
+      `    // Implement test for ${fn.name}`,
+      `    expect(true).toBe(true);`,
+      `  });`,
+      `});`,
+    ].join('\n');
+  }
+}
