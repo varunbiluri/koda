@@ -74,7 +74,7 @@ export interface AIProvider {
 }
 
 export interface AIConfig {
-  provider: 'azure';
+  provider: 'azure' | 'openai' | 'anthropic' | 'ollama';
   endpoint: string;
   apiKey: string;
   model: string;
