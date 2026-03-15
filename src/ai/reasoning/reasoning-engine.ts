@@ -1,6 +1,10 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { QueryEngine } from '../../search/query-engine.js';
+import { HybridRetrieval } from '../../search/hybrid-retrieval.js';
+import { loadEmbeddingStore } from '../../search/embedding-store.js';
+import { AzureEmbeddingProvider, NullEmbeddingProvider } from '../../search/embedding-provider.js';
+import { WorkspaceIntelligence } from '../../memory/workspace-intelligence.js';
 import type { RepoIndex } from '../../types/index.js';
 import type { AIProvider, ChatMessage } from '../types.js';
 import { buildContext, formatFileReferences } from '../../context/context-builder.js';
@@ -45,9 +49,13 @@ export interface ChatMetrics {
 }
 
 export class ReasoningEngine {
-  private queryEngine: QueryEngine | null;
-  private provider: AIProvider;
-  private index: RepoIndex | null;
+  private queryEngine:   QueryEngine | null;
+  private provider:      AIProvider;
+  private index:         RepoIndex | null;
+  /** HybridRetrieval wraps queryEngine + optional embedding search. Built lazily. */
+  private hybrid:        HybridRetrieval | null = null;
+  /** Workspace intelligence — loaded asynchronously in chat(). */
+  private workspace:     WorkspaceIntelligence | null = null;
 
   /**
    * @param index    - Repository index (may be null when using the chat() path without a pre-built index).
@@ -56,7 +64,7 @@ export class ReasoningEngine {
    *                   a lazily-initialised default). Pass an explicit provider for testing.
    */
   constructor(index: RepoIndex | null, provider?: AIProvider) {
-    this.index = index;
+    this.index       = index;
     this.queryEngine = index ? new QueryEngine(index) : null;
 
     if (provider) {
@@ -74,7 +82,7 @@ export class ReasoningEngine {
    * Use this factory when no provider is available at construction time.
    */
   static async create(index: RepoIndex | null): Promise<ReasoningEngine> {
-    const config = await loadConfig();
+    const config   = await loadConfig();
     const provider = createProvider(config);
     return new ReasoningEngine(index, provider);
   }
@@ -82,6 +90,37 @@ export class ReasoningEngine {
   /** Replace the provider at runtime (useful for testing or provider switching). */
   setProvider(provider: AIProvider): void {
     this.provider = provider;
+  }
+
+  /**
+   * Initialise HybridRetrieval for the current session.
+   * Loads the embedding store from disk and creates an AzureEmbeddingProvider
+   * if the config includes an embeddingDeployment field; falls back to
+   * NullEmbeddingProvider (TF-IDF only) silently.
+   */
+  private async initHybrid(rootPath: string): Promise<void> {
+    if (!this.queryEngine) return;
+
+    try {
+      const config   = await loadConfig();
+      const embStore = await loadEmbeddingStore(rootPath);
+
+      // AzureEmbeddingProvider requires an embeddingDeployment field in config.
+      // If not set, NullEmbeddingProvider is used and HybridRetrieval falls back to TF-IDF.
+      const cfgWithEmb = config as typeof config & { embeddingDeployment?: string };
+      const embProv   = cfgWithEmb.embeddingDeployment
+        ? new AzureEmbeddingProvider(cfgWithEmb)
+        : new NullEmbeddingProvider();
+
+      this.hybrid = new HybridRetrieval(
+        this.queryEngine,
+        embProv,
+        embStore?.entries,
+      );
+    } catch {
+      // Non-fatal: fall back to TF-IDF only
+      this.hybrid = new HybridRetrieval(this.queryEngine);
+    }
   }
 
   async analyze(
@@ -265,7 +304,7 @@ export class ReasoningEngine {
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
 
-    // ── Step 0: Load AGENTS.md and detect project dependencies ───────────────
+    // ── Step 0: Parallel initialisation ──────────────────────────────────────
     let agentsMdContent = '';
     let detectedDeps: ProjectDependencies | null = null;
 
@@ -285,24 +324,34 @@ export class ReasoningEngine {
           // Detection failure is non-fatal
         }
       })(),
+      // Load workspace intelligence (cross-session learned patterns)
+      (async () => {
+        try {
+          this.workspace = await WorkspaceIntelligence.load(context.rootPath);
+        } catch {
+          // Non-fatal
+        }
+      })(),
+      // Initialise hybrid retrieval (TF-IDF + embedding)
+      this.initHybrid(context.rootPath),
     ]);
 
-    // ── Step 1: Automatic code retrieval (Problem 6) ─────────────────────────
+    // ── Step 1: Automatic code retrieval ─────────────────────────────────────
     let relevantContext = '';
-    const qe = this.queryEngine;
     const idx = this.index;
 
     // Token safety guard: estimate size before retrieval
-    const TOKEN_LIMIT = 200_000;
+    const TOKEN_LIMIT  = 200_000;
     let retrievalLimit = 5;
-    const baseSystemSize = (buildChatSystemPrompt(context, '', agentsMdContent, detectedDeps)).length / 4; // rough char→token
+    const baseSystemSize =
+      buildChatSystemPrompt(context, '', agentsMdContent, detectedDeps, '').length / 4;
     if (baseSystemSize > TOKEN_LIMIT * 0.5) {
-      retrievalLimit = 2; // shrink retrieval if system prompt already large
+      retrievalLimit = 2;
     }
 
-    if (qe && idx) {
+    if (this.hybrid && idx) {
       onStage?.('SEARCH repository');
-      const hits = qe.search(input, retrievalLimit);
+      const hits = await this.hybrid.search(input, retrievalLimit);
       if (hits.length > 0) {
         const chunks = hits
           .map((r) => idx.chunks.find((c) => c.id === r.chunkId))
@@ -310,15 +359,27 @@ export class ReasoningEngine {
         const filePaths = Array.from(new Set(chunks.map((c) => c.filePath)));
         const excerpts = chunks
           .slice(0, 3)
-          .map((c) => `\`\`\`${c.language ?? ''}\n// ${c.filePath}:${c.startLine}\n${c.content.slice(0, 500)}\n\`\`\``)
+          .map(
+            (c) =>
+              `\`\`\`${c.language ?? ''}\n// ${c.filePath}:${c.startLine}\n${c.content.slice(0, 500)}\n\`\`\``,
+          )
           .join('\n\n');
         relevantContext =
           `\n\nRelevant repository files:\n${filePaths.map((f) => `- ${f}`).join('\n')}\n\nKey code context:\n${excerpts}`;
-        // Estimate tokens (~4 chars per token) and surface context to caller
         const estimatedTokens = Math.round(relevantContext.length / 4);
         onContext?.(filePaths, estimatedTokens);
+
+        // Track hot files in workspace intelligence
+        if (this.workspace) {
+          for (const f of filePaths.slice(0, 5)) {
+            this.workspace.recordFileEdited(f);
+          }
+        }
       }
     }
+
+    // ── Workspace intelligence: inject learned patterns ───────────────────────
+    const workspaceContext = this.workspace?.formatForPrompt(input, 3) ?? '';
 
     // ── Context compression: summarize long histories ─────────────────────────
     const compressedHistory = await compressHistory(history, this.provider, onStage);
@@ -326,7 +387,16 @@ export class ReasoningEngine {
     // ── Base message thread (system prompt + trimmed history) ─────────────────
     const trimmedHistory = compressedHistory.slice(-20);
     const baseMessages: ChatMessage[] = [
-      { role: 'system', content: buildChatSystemPrompt(context, relevantContext, agentsMdContent, detectedDeps) },
+      {
+        role: 'system',
+        content: buildChatSystemPrompt(
+          context,
+          relevantContext,
+          agentsMdContent,
+          detectedDeps,
+          workspaceContext,
+        ),
+      },
       ...trimmedHistory,
     ];
 
@@ -457,7 +527,7 @@ export class ReasoningEngine {
           }
 
           logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
-          const result = await registry.execute(toolName, args, onStage, onToolUsed);
+          const result = await registry.execute(toolName, args, onStage, onToolUsed, signal);
           toolCount++;
           return { role: 'tool', content: result, tool_call_id: toolCall.id };
         };
@@ -484,7 +554,17 @@ export class ReasoningEngine {
         }
       } else {
         onStage?.('INFO generating response');
-        onChunk(message.content ?? '');
+        const finalAnswer = message.content ?? '';
+        onChunk(finalAnswer);
+
+        // Record successful task in workspace intelligence (best-effort)
+        if (this.workspace && finalAnswer && toolCount > 0) {
+          const shortProblem = input.slice(0, 120);
+          const shortSolution = finalAnswer.slice(0, 300);
+          this.workspace.recordSuccess(shortProblem, shortSolution, []);
+          void this.workspace.save();
+        }
+
         const duration = Math.floor((Date.now() - startTime) / 1000);
         return { tools: toolCount, tokens: totalTokens, duration };
       }
@@ -504,9 +584,10 @@ const SAFE_TOOLS = new Set(['read_file', 'search_code', 'list_files', 'fetch_url
 
 function buildChatSystemPrompt(
   ctx: ChatContext,
-  relevantContext = '',
-  agentsMd = '',
-  deps: ProjectDependencies | null = null,
+  relevantContext   = '',
+  agentsMd          = '',
+  deps:               ProjectDependencies | null = null,
+  workspaceContext  = '',
 ): string {
   const identity = [
     'You are Koda — an autonomous AI software engineer created by Varun Billuri.',
@@ -560,6 +641,9 @@ function buildChatSystemPrompt(
     parts.push('');
     // Limit AGENTS.md injection to 4000 chars to avoid token explosion
     parts.push(agentsMd.slice(0, 4000));
+  }
+  if (workspaceContext) {
+    parts.push(workspaceContext);
   }
   if (relevantContext) {
     parts.push(relevantContext);

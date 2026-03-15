@@ -1,28 +1,12 @@
 import type { ToolDefinitionForAI } from '../ai/types.js';
 import { readFile, writeFile, searchCode, listFiles } from './filesystem-tools.js';
 import { gitBranch, gitStatus, gitDiff, gitLog, gitAdd, gitCommit, gitPush, gitCreatePr, createKodaCommit } from './git-tools.js';
-import { runTerminal } from './terminal-tools.js';
 import { applyPatch } from './patch-tools.js';
 import { fetchUrl } from './web-tools.js';
 import { replaceText, insertAfterPattern } from './diff-tools.js';
+import { SandboxManager } from '../runtime/sandbox-manager.js';
 import * as path from 'node:path';
 
-/**
- * Commands that could cause irreversible data loss.
- * The run_terminal tool refuses to execute these — use apply_patch or git tools instead.
- */
-const DESTRUCTIVE_PATTERNS: RegExp[] = [
-  /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, // rm -rf / rm -fr
-  /\brm\s+-r\b/i,                                   // rm -r (recursive)
-  /\bgit\s+reset\s+--hard\b/,                       // git reset --hard
-  /\bgit\s+clean\s+-[a-z]*f/,                       // git clean -f / -fd
-  /\bgit\s+push\s+.*--force\b/,                     // git push --force
-  /\bdrop\s+table\b/i,                              // SQL DROP TABLE
-  /\btruncate\s+table\b/i,                          // SQL TRUNCATE TABLE
-  /\bdd\s+if=/i,                                    // dd (disk destroyer)
-  /\bmkfs\b/i,                                      // format filesystem
-  /\b:>\s*\//,                                      // truncate root files
-];
 
 /**
  * ToolRegistry — exposes Koda's tool implementations as AI-callable definitions.
@@ -33,7 +17,25 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
  *   const result = await registry.execute('git_branch', {}); // run a tool call
  */
 export class ToolRegistry {
-  constructor(private rootPath: string) {}
+  private sandbox: SandboxManager;
+
+  constructor(private rootPath: string) {
+    this.sandbox = new SandboxManager(rootPath);
+  }
+
+  /**
+   * Validate that a file path is inside the repository root.
+   * Returns an error string if the path escapes the sandbox, or null if safe.
+   */
+  private assertPathSafe(filePath: string): string | null {
+    // Resolve relative to rootPath so that "src/foo.ts" works correctly
+    const abs  = path.resolve(this.rootPath, filePath);
+    const root = path.resolve(this.rootPath);
+    if (abs !== root && !abs.startsWith(root + path.sep)) {
+      return `Error: File path escapes repository root: "${filePath}"`;
+    }
+    return null;
+  }
 
   getToolDefinitions(): ToolDefinitionForAI[] {
     return [
@@ -384,6 +386,7 @@ export class ToolRegistry {
     args: Record<string, unknown>,
     onStage?: (message: string) => void,
     onTiming?: (name: string, durationMs: number) => void,
+    signal?: AbortSignal,
   ): Promise<string> {
     const t0 = Date.now();
     const done = (result: string): string => {
@@ -454,23 +457,19 @@ export class ToolRegistry {
 
       case 'run_terminal': {
         const command = String(args['command'] ?? '');
-
-        // ── Safety: refuse destructive commands ──────────────────────────────
-        if (DESTRUCTIVE_PATTERNS.some((p) => p.test(command))) {
-          return done(
-            `Error: Refusing to execute potentially destructive command: "${command}". ` +
-            `Use apply_patch to edit files or git tools to manage the repository safely.`,
-          );
-        }
-
         onStage?.(`RUN ${command}`);
-        const result = await runTerminal(command, this.rootPath);
-        if (!result.success) return done(`Error: ${result.error}`);
-        return done(result.data?.stdout ?? '');
+        const result = await this.sandbox.execute(command, { signal });
+        if (result.exitCode !== 0) {
+          const detail = result.stderr?.trim() || result.stdout?.trim() || 'non-zero exit';
+          return done(`Error (exit ${result.exitCode}): ${detail}`);
+        }
+        return done(result.stdout ?? '');
       }
 
       case 'write_file': {
         const filePath = String(args['path'] ?? '');
+        const pathErr = this.assertPathSafe(filePath);
+        if (pathErr) return done(pathErr);
         const lineCount = String(args['content'] ?? '').split('\n').length;
         onStage?.(`WRITE ${filePath} (${lineCount} lines)`);
         const result = await writeFile(filePath, String(args['content'] ?? ''), this.rootPath);
@@ -479,6 +478,8 @@ export class ToolRegistry {
 
       case 'apply_patch': {
         const filePath = String(args['filePath'] ?? '');
+        const pathErr = this.assertPathSafe(filePath);
+        if (pathErr) return done(pathErr);
         const startLine = Number(args['startLine'] ?? 1);
         const endLine = Number(args['endLine'] ?? startLine);
         const replacement = String(args['replacement'] ?? '');
@@ -536,15 +537,23 @@ export class ToolRegistry {
 
       case 'koda_commit': {
         const message = String(args['message'] ?? '');
-        const files = Array.isArray(args['files']) ? (args['files'] as string[]) : ['.'];
+        const rawFiles = Array.isArray(args['files']) ? (args['files'] as string[]) : ['.'];
+        // Guard each explicitly listed file (skip '.' which stages all changes)
+        for (const f of rawFiles) {
+          if (f === '.') continue;
+          const pathErr = this.assertPathSafe(f);
+          if (pathErr) return done(pathErr);
+        }
         onStage?.('COMMIT koda-ai');
-        const result = await createKodaCommit(message, this.rootPath, files);
+        const result = await createKodaCommit(message, this.rootPath, rawFiles);
         if (!result.success) return done(`Error: ${result.error}`);
         return done(`Committed ${result.data!.hash} — ${message}\nCo-authored-by: Koda AI`);
       }
 
       case 'replace_text': {
         const filePath = String(args['filePath'] ?? '');
+        const pathErr = this.assertPathSafe(filePath);
+        if (pathErr) return done(pathErr);
         onStage?.(`WRITE ${filePath} (replace text)`);
         const oldText = String(args['oldText'] ?? '');
         const newText = String(args['newText'] ?? '');
@@ -558,6 +567,8 @@ export class ToolRegistry {
 
       case 'insert_after_pattern': {
         const filePath = String(args['filePath'] ?? '');
+        const pathErr = this.assertPathSafe(filePath);
+        if (pathErr) return done(pathErr);
         const pattern = String(args['pattern'] ?? '');
         onStage?.(`WRITE ${filePath} (insert after /${pattern}/)`);
         const text = String(args['text'] ?? '');

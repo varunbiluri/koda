@@ -1,8 +1,13 @@
 import type { QueryEngine } from './query-engine.js';
+import type { EmbeddingProvider } from './embedding-provider.js';
+import type { StoredEmbedding } from './embedding-store.js';
+import { searchEmbeddings } from './semantic-search.js';
 
-/** Minimal interface for any embedding provider. */
-export interface EmbeddingProvider {
-  embed(text: string): Promise<number[]>;
+export type { EmbeddingProvider };
+
+export interface RetrievalResult {
+  chunkId: string;
+  score:   number;
 }
 
 /**
@@ -18,7 +23,7 @@ export interface EmbeddingProvider {
  * @returns Sorted array of fused scores, highest first.
  */
 export function reciprocalRankFusion(
-  tfidfRanks: Array<{ id: string; score: number }>,
+  tfidfRanks:     Array<{ id: string; score: number }>,
   embeddingRanks: Array<{ id: string; score: number }>,
   k = 60,
 ): Array<{ id: string; fusedScore: number }> {
@@ -40,52 +45,67 @@ export function reciprocalRankFusion(
 }
 
 /**
- * HybridRetrieval — combines TF-IDF (via QueryEngine) and optional dense
- * embedding search using RRF fusion.
+ * HybridRetrieval — combines TF-IDF (via QueryEngine) with optional dense
+ * embedding search using Reciprocal Rank Fusion (RRF, k=60).
  *
- * When no embeddingProvider is supplied the search falls back to TF-IDF only.
- * This lets the class be used today while the embedding infrastructure is
- * being built out.
+ * When no embeddingProvider or embeddingStore is supplied the search falls
+ * back gracefully to TF-IDF only.  When an embedding provider is present
+ * but the network call fails, TF-IDF is also used as the fallback so the
+ * caller always gets results.
  */
 export class HybridRetrieval {
   constructor(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    private queryEngine: QueryEngine,
+    private queryEngine:       QueryEngine,
     private embeddingProvider?: EmbeddingProvider,
+    private embeddingStore?:    StoredEmbedding[],
   ) {}
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async search(query: string, topK: number): Promise<any[]> {
-    // TF-IDF search (always available)
+  async search(query: string, topK: number): Promise<RetrievalResult[]> {
+    // TF-IDF path (always available)
     const tfidfResults = this.queryEngine.search(query, topK * 2);
 
-    if (!this.embeddingProvider) {
-      // No embedding provider — return TF-IDF results directly
-      return tfidfResults.slice(0, topK);
+    // Fall back to TF-IDF when embedding infrastructure is not ready
+    if (
+      !this.embeddingProvider ||
+      !this.embeddingStore    ||
+      this.embeddingStore.length === 0
+    ) {
+      return tfidfResults.slice(0, topK).map((r) => ({
+        chunkId: r.chunkId,
+        score:   r.score,
+      }));
     }
 
-    // Dense embedding search
-    const queryEmbedding = await this.embeddingProvider.embed(query);
+    // Dense embedding search — failure is non-fatal
+    let embeddingResults: Array<{ chunkId: string; score: number }> = [];
+    try {
+      const queryVector = await this.embeddingProvider.embed(query);
+      embeddingResults  = searchEmbeddings(queryVector, this.embeddingStore, topK * 2);
+    } catch {
+      // Network or config error — degrade to TF-IDF
+      return tfidfResults.slice(0, topK).map((r) => ({
+        chunkId: r.chunkId,
+        score:   r.score,
+      }));
+    }
 
-    // Placeholder: in a full implementation, queryEmbedding would be used to
-    // search a vector store containing pre-computed chunk embeddings. Until that
-    // store exists, the embedding path degrades gracefully to TF-IDF only.
-    void queryEmbedding; // suppress unused-variable warning
+    // RRF fusion
+    const tfidfRanks     = tfidfResults.map((r) => ({ id: r.chunkId, score: r.score }));
+    const embeddingRanks = embeddingResults.map((r) => ({ id: r.chunkId, score: r.score }));
+    const fused          = reciprocalRankFusion(tfidfRanks, embeddingRanks);
 
-    // Build ranked lists for RRF
-    const tfidfRanks = tfidfResults.map((r) => ({ id: r.chunkId, score: r.score }));
+    // Map fused IDs back to a uniform result shape
+    const tfidfById   = new Map(tfidfResults.map((r) => [r.chunkId, r.score]));
+    const embById     = new Map(embeddingResults.map((r) => [r.chunkId, r.score]));
 
-    // embeddingRanks would come from a dense vector store search here.
-    // For now, supply an empty list so RRF still returns TF-IDF results.
-    const embeddingRanks: Array<{ id: string; score: number }> = [];
-
-    const fused = reciprocalRankFusion(tfidfRanks, embeddingRanks);
-
-    // Map fused ids back to original search results
-    const resultByChunkId = new Map(tfidfResults.map((r) => [r.chunkId, r]));
-    return fused
-      .slice(0, topK)
-      .map(({ id }) => resultByChunkId.get(id))
-      .filter((r): r is NonNullable<typeof r> => r !== undefined);
+    return fused.slice(0, topK).map(({ id, fusedScore }) => ({
+      chunkId: id,
+      // Expose the RRF score; callers that need the original scores can look
+      // them up through the index.
+      score: fusedScore,
+      // Keep a trace of original scores for debugging (optional)
+      _tfidfScore: tfidfById.get(id),
+      _embScore:   embById.get(id),
+    })) as RetrievalResult[];
   }
 }
