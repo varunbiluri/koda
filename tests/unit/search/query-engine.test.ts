@@ -5,7 +5,7 @@ import type { RepoIndex } from '../../../src/types/index.js';
 function makeTestIndex(): RepoIndex {
   return {
     metadata: {
-      version: '0.1.0',
+      version: '0.1.1',
       createdAt: new Date().toISOString(),
       rootPath: '/test',
       fileCount: 2,
