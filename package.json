@@ -1,6 +1,6 @@
 {
-  "name": "koda",
-  "version": "0.1.1",
+  "name": "@varunbilluri/koda",
+  "version": "0.1.2",
   "description": "AI software engineer — terminal-based repository intelligence engine",
   "type": "module",
   "main": "dist/index.js",
@@ -15,11 +15,24 @@
   },
   "keywords": [
     "ai",
+    "cli",
     "code-intelligence",
-    "cli"
+    "developer-tools",
+    "autonomous-agent",
+    "software-engineer"
   ],
-  "author": "",
+  "author": "Varun Billuri",
   "license": "ISC",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/varunbiluri/koda"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
     "onlyBuiltDependencies": [

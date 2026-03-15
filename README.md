@@ -8,21 +8,34 @@ Koda indexes your repository, reasons over code with Azure AI, and executes mult
 
 ## Installation
 
-### One-line install
+### npm (recommended)
+
+```bash
+npm install -g @varunbilluri/koda
+```
+
+Then run:
+
+```bash
+koda
+```
+
+**Requirements:** Node.js 18+
+
+### One-line install (curl)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/varunbiluri/koda/main/scripts/install-remote.sh | bash
 ```
 
-See [CURL_INSTALL.md](./CURL_INSTALL.md) for details and security considerations.
-
-### Manual install
+### Build from source
 
 ```bash
+git clone https://github.com/varunbiluri/koda
+cd koda
 pnpm install
 pnpm build
 pnpm link --global
-koda --version
 ```
 
 **Requirements:** Node.js 18+, pnpm 8+
