@@ -7,6 +7,9 @@ import { configExists, loadConfig } from '../../ai/config-store.js';
 import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
+import { TaskRouter, TaskComplexity } from '../../orchestrator/task-router.js';
+import type { TaskClassification } from '../../orchestrator/task-router.js';
+import { logger } from '../../utils/logger.js';
 import type { ChatMessage } from '../../ai/types.js';
 import type { RepoIndex } from '../../types/index.js';
 import { loadSession, saveSession } from '../../memory/conversation-store.js';
@@ -44,6 +47,8 @@ export class ConversationEngine {
   private sessionId: string = `session-${Date.now()}`;
   /** Timeline entries from the last chat() call. */
   private lastTimeline: Array<{ name: string; durationMs: number }> = [];
+  /** Task complexity router — classifies every incoming query before execution. */
+  private readonly taskRouter = new TaskRouter();
 
   constructor(ui?: UIRenderer) {
     this.ui = ui ?? new UIRenderer();
@@ -118,7 +123,7 @@ export class ConversationEngine {
     return this.handleLocalSearch(input, ctx.index);
   }
 
-  // ── AI-first handler ───────────────────────────────────────────────────────
+  // ── AI-first handler (with Task Router) ───────────────────────────────────
 
   private async handleWithAI(
     input: string,
@@ -135,45 +140,90 @@ export class ConversationEngine {
     let assistantResponse = '';
 
     try {
-      const config = await loadConfig();
-      const provider = new AzureAIProvider(config);
-      const engine = new ReasoningEngine(ctx.index, provider);
+      // ── Step 0: Classify task complexity ─────────────────────────────────
+      const filePaths      = this._preRetrieve(input, ctx);
+      const classification = this.taskRouter.classify(input, filePaths);
+      const { complexity, confidence, reason } = classification;
 
-      const timeline: Array<{ name: string; durationMs: number }> = [];
-
-      const metrics = await engine.chat(
-        input,
-        {
-          repoName: path.basename(ctx.rootPath),
-          branch:   ctx.branch ?? 'unknown',
-          rootPath: ctx.rootPath,
-          fileCount: ctx.index?.metadata.fileCount ?? 0,
-        },
-        this.history,
-        (chunk) => {
-          assistantResponse += chunk;
-          this.ui.renderStreamChunk(chunk);
-        },
-        (stage) => this.ui.stream(stage),
-        (steps) => {
-          this.ui.setLastPlan(steps);
-          this.ui.renderPlan(steps);
-        },
-        (files, tokens) => {
-          this.ui.updateContext(files, tokens);
-          this.ui.renderContext(files, tokens);
-        },
-        (toolName, durationMs) => {
-          this.ui.recordToolUsed(toolName);
-          timeline.push({ name: toolName, durationMs });
-        },
-        signal,
+      logger.debug(
+        `[router] complexity=${complexity} confidence=${confidence.toFixed(2)} reason="${reason}"`,
       );
 
-      this.lastTimeline = timeline;
-      this.ui.setTimeline(timeline);
+      // Safety fallback: low-confidence classifications always use the SIMPLE path
+      const route: TaskComplexity =
+        confidence < TaskRouter.SAFETY_FLOOR ? TaskComplexity.SIMPLE : complexity;
 
-      // Record the assistant turn so follow-up questions have context
+      if (route !== complexity) {
+        logger.debug('[router] Low confidence — overriding to SIMPLE');
+      }
+
+      // Show routing decision in the terminal
+      this.ui.stream(`INFO ROUTER: ${this._routeLabel(route)} (${Math.round(confidence * 100)}% confidence)`);
+
+      // ── Step 1: Route execution ───────────────────────────────────────────
+      const config   = await loadConfig();
+      const provider = new AzureAIProvider(config);
+
+      if (route === TaskComplexity.COMPLEX && ctx.index) {
+        // ── COMPLEX path — multi-agent orchestration ──────────────────────
+        logger.info(`[router] Routing to agent orchestrator — ${reason}`);
+        assistantResponse = await this._runWithOrchestrator(input, ctx, provider, signal);
+        // Rendering already done inside _runWithOrchestrator
+      } else {
+        // ── SIMPLE / MEDIUM path — ReasoningEngine.chat() ─────────────────
+        // Both tiers use the same full-capability tool-calling loop.
+        // MEDIUM is logged differently to expose the routing decision.
+        if (route === TaskComplexity.MEDIUM) {
+          logger.info(`[router] Routing to single-agent reasoning — ${reason}`);
+        } else {
+          logger.info(`[router] Routing to reasoning engine — ${reason}`);
+        }
+
+        const engine   = new ReasoningEngine(ctx.index, provider);
+        const timeline: Array<{ name: string; durationMs: number }> = [];
+
+        const metrics = await engine.chat(
+          input,
+          {
+            repoName:  path.basename(ctx.rootPath),
+            branch:    ctx.branch ?? 'unknown',
+            rootPath:  ctx.rootPath,
+            fileCount: ctx.index?.metadata.fileCount ?? 0,
+          },
+          this.history,
+          (chunk) => {
+            assistantResponse += chunk;
+            this.ui.renderStreamChunk(chunk);
+          },
+          (stage) => this.ui.stream(stage),
+          (steps) => {
+            this.ui.setLastPlan(steps);
+            this.ui.renderPlan(steps);
+          },
+          (files, tokens) => {
+            this.ui.updateContext(files, tokens);
+            this.ui.renderContext(files, tokens);
+          },
+          (toolName, durationMs) => {
+            this.ui.recordToolUsed(toolName);
+            timeline.push({ name: toolName, durationMs });
+          },
+          signal,
+        );
+
+        this.lastTimeline = timeline;
+        this.ui.setTimeline(timeline);
+        this.ui.renderStreamEnd();
+
+        if (metrics) {
+          this.ui.renderExecutionSummary(metrics);
+          if (timeline.length > 0) {
+            this.ui.renderTimeline(timeline);
+          }
+        }
+      }
+
+      // ── Step 2: Post-processing (all paths) ───────────────────────────────
       if (assistantResponse) {
         this.history.push({ role: 'assistant', content: assistantResponse });
       }
@@ -189,14 +239,6 @@ export class ConversationEngine {
       } catch {
         // Non-fatal — session persistence failure should not interrupt the user
       }
-
-      this.ui.renderStreamEnd();
-      if (metrics) {
-        this.ui.renderExecutionSummary(metrics);
-        if (timeline.length > 0) {
-          this.ui.renderTimeline(timeline);
-        }
-      }
     } catch (err) {
       // Remove the optimistically-pushed user message on failure
       this.history.pop();
@@ -204,6 +246,135 @@ export class ConversationEngine {
     }
 
     return { handled: true, shouldQuit: false };
+  }
+
+  // ── Task Router helpers ────────────────────────────────────────────────────
+
+  /**
+   * Quick TF-IDF retrieval pass used solely to collect file paths for the
+   * task complexity classifier.  Non-fatal: returns [] on any error.
+   * This is a lightweight search (topK=5) that runs in < 1 ms for typical
+   * repositories and does NOT duplicate the full retrieval inside chat().
+   */
+  private _preRetrieve(input: string, ctx: ConversationContext): string[] {
+    if (!ctx.index) return [];
+    try {
+      const qe   = new QueryEngine(ctx.index);
+      const hits = qe.search(input, 5);
+      return [
+        ...new Set(
+          hits
+            .map((h) => ctx.index!.chunks.find((c) => c.id === h.chunkId)?.filePath)
+            .filter((f): f is string => f !== undefined),
+        ),
+      ];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Return a human-readable route description for the UI stream line.
+   * Format matches the INFO ROUTER prefix expected by parseStage().
+   */
+  private _routeLabel(route: TaskComplexity): string {
+    switch (route) {
+      case TaskComplexity.SIMPLE:  return 'SIMPLE task — reasoning engine';
+      case TaskComplexity.MEDIUM:  return 'MEDIUM task — single-agent reasoning';
+      case TaskComplexity.COMPLEX: return 'COMPLEX task — multi-agent orchestration';
+    }
+  }
+
+  /**
+   * Execute the task using the full AgentOrchestrator via ExecutionEngine.
+   *
+   * Formats the `ExecutionReport` into a markdown-compatible string so it can be
+   * rendered by the same UI path as chat() responses and stored in history.
+   *
+   * Falls back to ReasoningEngine.chat() if:
+   *   - ExecutionEngine.execute() throws
+   *   - No repository index is available
+   */
+  private async _runWithOrchestrator(
+    input:    string,
+    ctx:      ConversationContext,
+    provider: AzureAIProvider,
+    signal?:  AbortSignal,
+  ): Promise<string> {
+    // Lazy-import to keep the startup path fast and avoid any circular deps
+    const { ExecutionEngine } = await import('../../execution/execution-engine.js');
+    const execEngine = new ExecutionEngine();
+
+    let assistantResponse = '';
+
+    try {
+      this.ui.stream('INFO ROUTER: launching agent orchestrator');
+
+      const report = await execEngine.execute(input, ctx.rootPath, { skipTests: false });
+
+      const lines: string[] = [
+        report.success
+          ? 'Agent orchestrator completed the task successfully.'
+          : 'Agent orchestrator completed with errors.',
+        '',
+        report.summary,
+      ];
+
+      if (report.filesModified.length > 0) {
+        lines.push('', '**Files modified:**');
+        report.filesModified.forEach((f) => lines.push(`- \`${f}\``));
+      }
+
+      if (report.errors.length > 0) {
+        lines.push('', '**Errors:**');
+        report.errors.forEach((e) => lines.push(`- ${e}`));
+      }
+
+      assistantResponse = lines.join('\n');
+      this.ui.renderStreamChunk(assistantResponse);
+      this.ui.renderStreamEnd();
+
+      return assistantResponse;
+    } catch (err) {
+      // ── Graceful fallback: orchestrator failed → ReasoningEngine.chat() ──
+      const errMsg = (err as Error).message;
+      logger.warn(`[router] Orchestrator failed (${errMsg}); falling back to reasoning engine`);
+      this.ui.stream(`WARN Orchestrator error — falling back to reasoning engine`);
+
+      const engine   = new ReasoningEngine(ctx.index, provider);
+      const timeline: Array<{ name: string; durationMs: number }> = [];
+
+      const metrics = await engine.chat(
+        input,
+        {
+          repoName:  path.basename(ctx.rootPath),
+          branch:    ctx.branch ?? 'unknown',
+          rootPath:  ctx.rootPath,
+          fileCount: ctx.index?.metadata.fileCount ?? 0,
+        },
+        this.history,
+        (chunk) => {
+          assistantResponse += chunk;
+          this.ui.renderStreamChunk(chunk);
+        },
+        (stage)              => this.ui.stream(stage),
+        (steps)              => { this.ui.setLastPlan(steps); this.ui.renderPlan(steps); },
+        (files, tokens)      => { this.ui.updateContext(files, tokens); this.ui.renderContext(files, tokens); },
+        (toolName, durationMs) => { this.ui.recordToolUsed(toolName); timeline.push({ name: toolName, durationMs }); },
+        signal,
+      );
+
+      this.lastTimeline = timeline;
+      this.ui.setTimeline(timeline);
+      this.ui.renderStreamEnd();
+
+      if (metrics) {
+        this.ui.renderExecutionSummary(metrics);
+        if (timeline.length > 0) this.ui.renderTimeline(timeline);
+      }
+
+      return assistantResponse;
+    }
   }
 
   // ── Fast-path handlers ────────────────────────────────────────────────────
