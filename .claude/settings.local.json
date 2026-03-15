@@ -61,7 +61,8 @@
       "Bash(npm pack:*)",
       "Bash(npm login:*)",
       "Bash(npm publish:*)",
-      "Bash(npm set:*)"
+      "Bash(npm set:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

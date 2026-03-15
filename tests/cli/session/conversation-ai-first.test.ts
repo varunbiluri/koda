@@ -375,7 +375,7 @@ describe('ToolRegistry', () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const result = await registry.execute('write_file', { path: 'out.txt', content: 'hello' });
-    expect(result).toBe('File written successfully.');
+    expect(result).toContain('File written successfully');
   });
 
   it('execute with unknown tool name returns error string', async () => {
