@@ -1,7 +1,9 @@
 import type { ToolDefinitionForAI } from '../ai/types.js';
 import { readFile, writeFile, searchCode, listFiles } from './filesystem-tools.js';
-import { gitBranch, gitStatus, gitDiff, gitLog } from './git-tools.js';
+import { gitBranch, gitStatus, gitDiff, gitLog, gitAdd, gitCommit, gitPush, gitCreatePr, createKodaCommit } from './git-tools.js';
 import { runTerminal } from './terminal-tools.js';
+import { applyPatch } from './patch-tools.js';
+import { fetchUrl } from './web-tools.js';
 
 /**
  * ToolRegistry — exposes Koda's tool implementations as AI-callable definitions.
@@ -150,6 +152,150 @@ export class ToolRegistry {
           },
         },
       },
+      {
+        type: 'function',
+        function: {
+          name: 'apply_patch',
+          description:
+            'Surgically replace a range of lines in a file. Prefer this over write_file for targeted edits to large files.',
+          parameters: {
+            type: 'object',
+            properties: {
+              filePath: {
+                type: 'string',
+                description: 'File path relative to the repository root.',
+              },
+              startLine: {
+                type: 'number',
+                description: 'First line to replace (1-indexed, inclusive).',
+              },
+              endLine: {
+                type: 'number',
+                description: 'Last line to replace (1-indexed, inclusive).',
+              },
+              replacement: {
+                type: 'string',
+                description: 'New content to insert in place of lines startLine..endLine.',
+              },
+            },
+            required: ['filePath', 'startLine', 'endLine', 'replacement'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'git_add',
+          description: 'Stage one or more files for a git commit.',
+          parameters: {
+            type: 'object',
+            properties: {
+              files: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'List of file paths to stage, relative to the repository root.',
+              },
+            },
+            required: ['files'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'git_commit',
+          description: 'Create a git commit with the staged changes.',
+          parameters: {
+            type: 'object',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'Commit message.',
+              },
+            },
+            required: ['message'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'git_push',
+          description: 'Push the current branch to the remote origin.',
+          parameters: {
+            type: 'object',
+            properties: {
+              branch: {
+                type: 'string',
+                description: 'Branch name to push.',
+              },
+            },
+            required: ['branch'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'git_create_pr',
+          description: 'Create a GitHub pull request using the gh CLI.',
+          parameters: {
+            type: 'object',
+            properties: {
+              title: {
+                type: 'string',
+                description: 'Pull request title.',
+              },
+              body: {
+                type: 'string',
+                description: 'Pull request description body.',
+              },
+            },
+            required: ['title', 'body'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'fetch_url',
+          description:
+            'Fetch the text content of a URL (documentation, READMEs, API references). Response is truncated at 10 000 characters.',
+          parameters: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'Fully-qualified URL to fetch.',
+              },
+            },
+            required: ['url'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'koda_commit',
+          description:
+            'Stage files and create a git commit with Koda AI as a co-author. The developer remains the primary Git author; GitHub will display Koda AI in the contributor graph.',
+          parameters: {
+            type: 'object',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'Commit message (short imperative summary).',
+              },
+              files: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Files to stage. Defaults to ["."] (all changes).',
+              },
+            },
+            required: ['message'],
+          },
+        },
+      },
     ];
   }
 
@@ -235,6 +381,69 @@ export class ToolRegistry {
         onStage?.(`✏  writing ${filePath}`);
         const result = await writeFile(filePath, String(args['content'] ?? ''), this.rootPath);
         return result.success ? 'File written successfully.' : `Error: ${result.error}`;
+      }
+
+      case 'apply_patch': {
+        const filePath = String(args['filePath'] ?? '');
+        const startLine = Number(args['startLine'] ?? 1);
+        const endLine = Number(args['endLine'] ?? startLine);
+        const replacement = String(args['replacement'] ?? '');
+        onStage?.(`✏  patching ${filePath} (lines ${startLine}–${endLine})`);
+        const result = await applyPatch(filePath, startLine, endLine, replacement, this.rootPath);
+        if (!result.success) return `Error: ${result.error}`;
+        const d = result.data!;
+        return `Patched ${d.filePath}: replaced ${d.linesReplaced} line(s) with ${d.linesInserted} line(s).`;
+      }
+
+      case 'git_add': {
+        const files = Array.isArray(args['files']) ? (args['files'] as string[]) : [];
+        onStage?.(`🔧  git add ${files.join(' ')}`);
+        const errors: string[] = [];
+        for (const f of files) {
+          const result = await gitAdd(String(f), this.rootPath);
+          if (!result.success) errors.push(result.error ?? f);
+        }
+        return errors.length === 0
+          ? `Staged: ${files.join(', ')}`
+          : `Errors: ${errors.join('; ')}`;
+      }
+
+      case 'git_commit': {
+        const message = String(args['message'] ?? '');
+        onStage?.('🔧  git commit');
+        const result = await gitCommit(message, this.rootPath);
+        return result.success ? (result.data ?? 'Committed.') : `Error: ${result.error}`;
+      }
+
+      case 'git_push': {
+        const branch = String(args['branch'] ?? '');
+        onStage?.(`🔧  git push origin ${branch}`);
+        const result = await gitPush(branch, this.rootPath);
+        return result.success ? (result.data ?? 'Pushed.') : `Error: ${result.error}`;
+      }
+
+      case 'git_create_pr': {
+        const title = String(args['title'] ?? '');
+        const body = String(args['body'] ?? '');
+        onStage?.('🔧  creating pull request');
+        const result = await gitCreatePr(title, body, this.rootPath);
+        return result.success ? (result.data ?? 'Pull request created.') : `Error: ${result.error}`;
+      }
+
+      case 'fetch_url': {
+        const url = String(args['url'] ?? '');
+        onStage?.(`🌐  fetching ${url}`);
+        const result = await fetchUrl(url);
+        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+      }
+
+      case 'koda_commit': {
+        const message = String(args['message'] ?? '');
+        const files = Array.isArray(args['files']) ? (args['files'] as string[]) : ['.'];
+        onStage?.('🤖  committing as Koda AI');
+        const result = await createKodaCommit(message, this.rootPath, files);
+        if (!result.success) return `Error: ${result.error}`;
+        return `✔ Committed ${result.data!.hash} — ${message}\nCo-authored-by: Koda AI`;
       }
 
       default:

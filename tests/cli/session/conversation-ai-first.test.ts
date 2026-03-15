@@ -303,10 +303,10 @@ describe('ToolRegistry', () => {
     runTerminal: vi.fn().mockResolvedValue({ success: true, data: { stdout: 'hello', stderr: '', exitCode: 0 } }),
   }));
 
-  it('getToolDefinitions() returns 9 tools', async () => {
+  it('getToolDefinitions() returns 16 tools', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
-    expect(registry.getToolDefinitions()).toHaveLength(9);
+    expect(registry.getToolDefinitions()).toHaveLength(16);
   });
 
   it('every tool definition has name, description, and parameters', async () => {
