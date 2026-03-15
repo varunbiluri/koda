@@ -11,6 +11,9 @@ import { ToolRegistry } from '../../tools/tool-registry.js';
 import { compressHistory } from '../context/conversation-summarizer.js';
 import { detectDependencies } from '../../analysis/dependency-detector.js';
 import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
+import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
+import { createProvider } from '../providers/provider-factory.js';
+import { loadConfig } from '../config-store.js';
 
 export interface ReasoningOptions {
   maxResults?: number;
@@ -47,11 +50,37 @@ export class ReasoningEngine {
   private index: RepoIndex | null;
 
   /**
-   * @param index - Repository index (may be null when using the chat() path without a pre-built index).
+   * @param index    - Repository index (may be null when using the chat() path without a pre-built index).
+   * @param provider - Optional AI provider. If omitted, the provider is loaded from
+   *                   ~/.koda/config.json at construction time (synchronous best-effort via
+   *                   a lazily-initialised default). Pass an explicit provider for testing.
    */
-  constructor(index: RepoIndex | null, provider: AIProvider) {
+  constructor(index: RepoIndex | null, provider?: AIProvider) {
     this.index = index;
     this.queryEngine = index ? new QueryEngine(index) : null;
+
+    if (provider) {
+      this.provider = provider;
+    } else {
+      // Placeholder: will be replaced when an async init path is needed.
+      // For now, callers that omit the provider must call setProvider() before use
+      // or use the static factory method below.
+      this.provider = null as unknown as AIProvider;
+    }
+  }
+
+  /**
+   * Asynchronously create a ReasoningEngine with the provider loaded from config.
+   * Use this factory when no provider is available at construction time.
+   */
+  static async create(index: RepoIndex | null): Promise<ReasoningEngine> {
+    const config = await loadConfig();
+    const provider = createProvider(config);
+    return new ReasoningEngine(index, provider);
+  }
+
+  /** Replace the provider at runtime (useful for testing or provider switching). */
+  setProvider(provider: AIProvider): void {
     this.provider = provider;
   }
 
@@ -148,7 +177,7 @@ export class ReasoningEngine {
     if (!this.queryEngine || !this.index) {
       throw new Error('Repository index not loaded. Run `koda init` first.');
     }
-    onStage?.('🔍  reading files');
+    onStage?.('SEARCH repository');
     const searchResults = this.queryEngine.search(query, maxResults);
 
     if (searchResults.length === 0) {
@@ -161,7 +190,7 @@ export class ReasoningEngine {
       .filter((c): c is NonNullable<typeof c> => c !== undefined);
 
     // Step 3: Build context
-    onStage?.('🧠  planning changes');
+    onStage?.('INFO building context');
     const contextResult = buildContext(chunks, maxTokens);
     const fileReferences = formatFileReferences(contextResult.chunks);
 
@@ -179,7 +208,7 @@ export class ReasoningEngine {
     ];
 
     // Step 5: Stream AI model response
-    onStage?.('✏  generating response');
+    onStage?.('INFO generating response');
     await this.provider.streamChatCompletion(
       {
         messages,
@@ -204,16 +233,19 @@ export class ReasoningEngine {
    * AI-first conversational interface with automatic tool usage.
    *
    * Pipeline:
-   *   1. Vector search on the user query (Problem 6 — automatic code retrieval)
-   *   2. Planning call for action-verb queries (Problem 3)
-   *   3. Tool-calling loop, capped at MAX_ROUNDS with per-tool repeat guard (Problem 2)
+   *   1. Vector search on the user query (automatic code retrieval)
+   *   2. Planning call for action-verb queries
+   *   3. Tool-calling loop, capped at MAX_ROUNDS with per-tool repeat guard
    *
-   * @param input   - Raw user message (also present as last entry in history)
-   * @param context - Repository metadata injected into the system prompt
-   * @param history - Rolling conversation history (last ~20 messages)
-   * @param onChunk - Called once with the final answer text
-   * @param onStage - Optional progress indicator (generic stage messages)
-   * @param onPlan  - Optional callback with parsed plan steps to display
+   * @param input        - Raw user message (also present as last entry in history)
+   * @param context      - Repository metadata injected into the system prompt
+   * @param history      - Rolling conversation history (last ~20 messages)
+   * @param onChunk      - Called once with the final answer text
+   * @param onStage      - Optional progress indicator (structured label messages)
+   * @param onPlan       - Optional callback with parsed plan steps to display
+   * @param onContext    - Optional callback with (filePaths, estimatedTokens) after retrieval
+   * @param onToolUsed   - Optional callback with (toolName, durationMs) after each tool call
+   * @param signal       - Optional AbortSignal — cancels the loop between rounds
    */
   async chat(
     input: string,
@@ -222,6 +254,9 @@ export class ReasoningEngine {
     onChunk: (chunk: string) => void,
     onStage?: (message: string) => void,
     onPlan?: (steps: string[]) => void,
+    onContext?: (files: string[], estimatedTokens: number) => void,
+    onToolUsed?: (name: string, durationMs: number) => void,
+    signal?: AbortSignal,
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
@@ -266,7 +301,7 @@ export class ReasoningEngine {
     }
 
     if (qe && idx) {
-      onStage?.('🔍  searching repository');
+      onStage?.('SEARCH repository');
       const hits = qe.search(input, retrievalLimit);
       if (hits.length > 0) {
         const chunks = hits
@@ -279,11 +314,14 @@ export class ReasoningEngine {
           .join('\n\n');
         relevantContext =
           `\n\nRelevant repository files:\n${filePaths.map((f) => `- ${f}`).join('\n')}\n\nKey code context:\n${excerpts}`;
+        // Estimate tokens (~4 chars per token) and surface context to caller
+        const estimatedTokens = Math.round(relevantContext.length / 4);
+        onContext?.(filePaths, estimatedTokens);
       }
     }
 
     // ── Context compression: summarize long histories ─────────────────────────
-    const compressedHistory = await compressHistory(history, this.provider);
+    const compressedHistory = await compressHistory(history, this.provider, onStage);
 
     // ── Base message thread (system prompt + trimmed history) ─────────────────
     const trimmedHistory = compressedHistory.slice(-20);
@@ -335,7 +373,21 @@ export class ReasoningEngine {
     const toolUsage: Record<string, number> = {};
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      onStage?.('🧠  thinking');
+      // ── AbortSignal: cancel gracefully between rounds ──────────────────────
+      if (signal?.aborted) {
+        onChunk('');
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        return { tools: toolCount, tokens: totalTokens, duration };
+      }
+
+      // ── Budget guard: stop if agent has exceeded its call/token budget ─────
+      if (!agentBudgetManager.canMakeCall('reasoning-engine', 0)) {
+        onChunk('Budget limit reached — unable to make additional AI calls for this session.');
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        return { tools: toolCount, tokens: totalTokens, duration };
+      }
+
+      onStage?.('INFO thinking');
 
       const response = await this.provider.sendChatCompletion({
         messages: loopMessages,
@@ -345,8 +397,26 @@ export class ReasoningEngine {
         tool_choice: 'auto',
       });
 
+      const tokensUsed = response.usage?.total_tokens ?? 0;
+      agentBudgetManager.recordCall('reasoning-engine', {
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        totalTokens: tokensUsed,
+      });
+
       if (response.usage) {
         totalTokens += (response.usage.prompt_tokens ?? 0) + (response.usage.completion_tokens ?? 0);
+      }
+
+      // ── Surface budget warning via onStage when approaching limits ──────────
+      const remaining = agentBudgetManager.getRemainingBudget('reasoning-engine');
+      const budget = agentBudgetManager.getAgentBudget('reasoning-engine');
+      if (budget && budget.maxTokens > 0) {
+        const usedPct = (budget.currentTokens / budget.maxTokens) * 100;
+        if (usedPct > 80) {
+          onStage?.(`WARN Token budget ${Math.round(usedPct)}% used — responses may shorten`);
+          logger.debug(`[reasoning-engine] Budget: ${usedPct.toFixed(1)}% used (${remaining.remainingTokens} remaining)`);
+        }
       }
 
       const choice = response.choices[0];
@@ -369,8 +439,9 @@ export class ReasoningEngine {
           const toolName = toolCall.function.name;
           toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1;
 
-          if (toolUsage[toolName] > 3) {
-            logger.warn(`Tool loop protection: ${toolName} called ${toolUsage[toolName]} times`);
+          // Block at 3rd call to the same tool to prevent runaway loops
+          if (toolUsage[toolName] >= 3) {
+            logger.warn(`Tool loop protection: ${toolName} called ${toolUsage[toolName]} times (blocked at 3rd call)`);
             return {
               role: 'tool',
               content: `Tool ${toolName} stopped — called too many times. Summarise what you have so far.`,
@@ -386,7 +457,7 @@ export class ReasoningEngine {
           }
 
           logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
-          const result = await registry.execute(toolName, args, onStage);
+          const result = await registry.execute(toolName, args, onStage, onToolUsed);
           toolCount++;
           return { role: 'tool', content: result, tool_call_id: toolCall.id };
         };
@@ -412,7 +483,7 @@ export class ReasoningEngine {
           loopMessages.push(toolResult);
         }
       } else {
-        onStage?.('✏  generating response');
+        onStage?.('INFO generating response');
         onChunk(message.content ?? '');
         const duration = Math.floor((Date.now() - startTime) / 1000);
         return { tools: toolCount, tokens: totalTokens, duration };
@@ -462,6 +533,8 @@ function buildChatSystemPrompt(
     '• prefer direct answers',
     '• behave like an experienced developer reviewing the repository',
     '• maintain awareness of previous conversation steps',
+    '• if you cannot find sufficient evidence in the codebase to confirm something, say: "I cannot confirm this from the available repository code."',
+    '• never run destructive terminal commands (rm -rf, git reset --hard, DROP TABLE, etc.) — use apply_patch or git tools to make changes safely',
     '',
     `Repository: ${ctx.repoName}`,
     `Branch:     ${ctx.branch}`,

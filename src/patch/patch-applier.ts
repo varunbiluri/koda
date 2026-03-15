@@ -2,6 +2,13 @@ import type { FilePatch, PatchResult } from './types.js';
 import { readFile, writeFile } from '../tools/filesystem-tools.js';
 import { logger } from '../utils/logger.js';
 
+function normalizeContent(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^\uFEFF/, '');
+}
+
 export class PatchApplier {
   async applyPatch(patch: FilePatch, rootPath: string): Promise<PatchResult> {
     try {
@@ -12,7 +19,7 @@ export class PatchApplier {
 
       if (currentResult.success && currentResult.data) {
         // File exists - verify it matches old content
-        if (currentResult.data !== patch.oldContent) {
+        if (normalizeContent(currentResult.data) !== normalizeContent(patch.oldContent)) {
           return {
             success: false,
             filePath: patch.filePath,
