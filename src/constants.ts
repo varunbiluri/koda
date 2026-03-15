@@ -1,4 +1,4 @@
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 export const KODA_DIR = '.koda';
 
 export const DEFAULT_IGNORE_PATTERNS = [
