@@ -24,6 +24,8 @@ import { createWatchCommand } from './commands/watch.js';
 import { createExplainCommand } from './commands/explain.js';
 import { createImproveCommand } from './commands/improve.js';
 import { createConfigCommand } from './commands/config.js';
+import { createReviewCommand } from './commands/review.js';
+import { createTestGenCommand } from './commands/test-gen.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
@@ -68,6 +70,10 @@ export function createProgram(): Command {
 
   // Phase 8: Conversational CLI
   program.addCommand(createConfigCommand());
+
+  // Phase 10: Autonomous Engineering System
+  program.addCommand(createReviewCommand());
+  program.addCommand(createTestGenCommand());
 
   // Interactive mode
   program.addCommand(replCommand);

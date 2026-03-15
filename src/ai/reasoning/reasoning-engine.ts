@@ -8,6 +8,9 @@ import { getSystemPrompt } from '../prompts/system-prompt.js';
 import { buildCodeAnalysisPrompt } from '../prompts/code-analysis.js';
 import { logger } from '../../utils/logger.js';
 import { ToolRegistry } from '../../tools/tool-registry.js';
+import { compressHistory } from '../context/conversation-summarizer.js';
+import { detectDependencies } from '../../analysis/dependency-detector.js';
+import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
 
 export interface ReasoningOptions {
   maxResults?: number;
@@ -227,14 +230,27 @@ export class ReasoningEngine {
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
 
-    // ── Step 0: Load AGENTS.md if present ────────────────────────────────────
+    // ── Step 0: Load AGENTS.md and detect project dependencies ───────────────
     let agentsMdContent = '';
-    try {
-      const agentsMdPath = path.join(context.rootPath, 'AGENTS.md');
-      agentsMdContent = await fs.readFile(agentsMdPath, 'utf-8');
-    } catch {
-      // AGENTS.md not present — continue without it
-    }
+    let detectedDeps: ProjectDependencies | null = null;
+
+    await Promise.all([
+      (async () => {
+        try {
+          const agentsMdPath = path.join(context.rootPath, 'AGENTS.md');
+          agentsMdContent = await fs.readFile(agentsMdPath, 'utf-8');
+        } catch {
+          // AGENTS.md not present — continue without it
+        }
+      })(),
+      (async () => {
+        try {
+          detectedDeps = await detectDependencies(context.rootPath);
+        } catch {
+          // Detection failure is non-fatal
+        }
+      })(),
+    ]);
 
     // ── Step 1: Automatic code retrieval (Problem 6) ─────────────────────────
     let relevantContext = '';
@@ -244,7 +260,7 @@ export class ReasoningEngine {
     // Token safety guard: estimate size before retrieval
     const TOKEN_LIMIT = 200_000;
     let retrievalLimit = 5;
-    const baseSystemSize = (buildChatSystemPrompt(context, '', agentsMdContent)).length / 4; // rough char→token
+    const baseSystemSize = (buildChatSystemPrompt(context, '', agentsMdContent, detectedDeps)).length / 4; // rough char→token
     if (baseSystemSize > TOKEN_LIMIT * 0.5) {
       retrievalLimit = 2; // shrink retrieval if system prompt already large
     }
@@ -266,10 +282,13 @@ export class ReasoningEngine {
       }
     }
 
+    // ── Context compression: summarize long histories ─────────────────────────
+    const compressedHistory = await compressHistory(history, this.provider);
+
     // ── Base message thread (system prompt + trimmed history) ─────────────────
-    const trimmedHistory = history.slice(-20);
+    const trimmedHistory = compressedHistory.slice(-20);
     const baseMessages: ChatMessage[] = [
-      { role: 'system', content: buildChatSystemPrompt(context, relevantContext, agentsMdContent) },
+      { role: 'system', content: buildChatSystemPrompt(context, relevantContext, agentsMdContent, detectedDeps) },
       ...trimmedHistory,
     ];
 
@@ -342,19 +361,21 @@ export class ReasoningEngine {
           tool_calls: message.tool_calls,
         });
 
-        for (const toolCall of message.tool_calls) {
+        // ── Tool execution: safe tools in parallel, unsafe tools sequential ──
+        // Safe (read-only, no side effects): read_file, search_code, list_files, fetch_url
+        // Unsafe (write/exec/git): all other tools — run sequentially for safety
+
+        const executeOne = async (toolCall: NonNullable<typeof message.tool_calls>[number]): Promise<ChatMessage> => {
           const toolName = toolCall.function.name;
           toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1;
 
-          // Tool loop protection (Problem 2)
           if (toolUsage[toolName] > 3) {
             logger.warn(`Tool loop protection: ${toolName} called ${toolUsage[toolName]} times`);
-            loopMessages.push({
+            return {
               role: 'tool',
               content: `Tool ${toolName} stopped — called too many times. Summarise what you have so far.`,
               tool_call_id: toolCall.id,
-            });
-            continue;
+            };
           }
 
           let args: Record<string, unknown> = {};
@@ -365,15 +386,30 @@ export class ReasoningEngine {
           }
 
           logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
-          // Detailed stage message emitted inside execute() (Problem 4)
           const result = await registry.execute(toolName, args, onStage);
           toolCount++;
+          return { role: 'tool', content: result, tool_call_id: toolCall.id };
+        };
 
-          loopMessages.push({
-            role: 'tool',
-            content: result,
-            tool_call_id: toolCall.id,
-          });
+        const indexedCalls = message.tool_calls.map((tc, idx) => ({ tc, idx }));
+        const safeCalls = indexedCalls.filter(({ tc }) => SAFE_TOOLS.has(tc.function.name));
+        const unsafeCalls = indexedCalls.filter(({ tc }) => !SAFE_TOOLS.has(tc.function.name));
+
+        const resultMap = new Map<number, ChatMessage>();
+
+        // Safe tools in parallel
+        const safeSettled = await Promise.all(safeCalls.map(({ tc, idx }) => executeOne(tc).then((r) => ({ idx, r }))));
+        for (const { idx, r } of safeSettled) resultMap.set(idx, r);
+
+        // Unsafe tools sequentially
+        for (const { tc, idx } of unsafeCalls) {
+          resultMap.set(idx, await executeOne(tc));
+        }
+
+        const toolResults = message.tool_calls.map((_, idx) => resultMap.get(idx)!);
+
+        for (const toolResult of toolResults) {
+          loopMessages.push(toolResult);
         }
       } else {
         onStage?.('✏  generating response');
@@ -388,9 +424,19 @@ export class ReasoningEngine {
   }
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/** Tools that are safe to run in parallel (read-only, no side effects). */
+const SAFE_TOOLS = new Set(['read_file', 'search_code', 'list_files', 'fetch_url']);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildChatSystemPrompt(ctx: ChatContext, relevantContext = '', agentsMd = ''): string {
+function buildChatSystemPrompt(
+  ctx: ChatContext,
+  relevantContext = '',
+  agentsMd = '',
+  deps: ProjectDependencies | null = null,
+): string {
   const parts = [
     'You are Koda, a senior software engineer working inside this repository.',
     '',
@@ -409,6 +455,19 @@ function buildChatSystemPrompt(ctx: ChatContext, relevantContext = '', agentsMd 
     `Directory:  ${ctx.rootPath}`,
     `Files indexed: ${ctx.fileCount}`,
   ];
+  if (deps && deps.language !== 'unknown') {
+    parts.push('');
+    parts.push('## Detected Project Stack');
+    parts.push('');
+    parts.push(`Language:        ${deps.language}`);
+    if (deps.framework)      parts.push(`Framework:       ${deps.framework}`);
+    if (deps.testFramework)  parts.push(`Test framework:  ${deps.testFramework}`);
+    if (deps.buildTool)      parts.push(`Build tool:      ${deps.buildTool}`);
+    if (deps.packageManager) parts.push(`Package manager: ${deps.packageManager}`);
+    if (deps.topDependencies.length > 0) {
+      parts.push(`Key deps:        ${deps.topDependencies.slice(0, 10).join(', ')}`);
+    }
+  }
   if (agentsMd) {
     parts.push('');
     parts.push('## Project Knowledge (from AGENTS.md)');
