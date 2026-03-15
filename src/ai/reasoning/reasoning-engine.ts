@@ -296,10 +296,13 @@ export class ReasoningEngine {
     onContext?: (files: string[], estimatedTokens: number) => void,
     onToolUsed?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
+    chatOptions?: { maxRounds?: number },
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
     let totalTokens = 0;
+    // Track files written during this session for workspace memory
+    const sessionFilesWritten = new Set<string>();
 
     const registry = new ToolRegistry(context.rootPath);
     const tools = registry.getToolDefinitions();
@@ -438,9 +441,13 @@ export class ReasoningEngine {
       }
     }
 
-    // ── Step 3: Tool-calling loop (Problems 2 & 4) ────────────────────────────
-    const MAX_ROUNDS = 5;
+    // ── Step 3: Tool-calling loop ─────────────────────────────────────────────
+    // Dynamic budget: default 20 rounds, callers can increase for complex tasks.
+    // Minimum is 20 so medium/large features complete without truncation.
+    const MAX_ROUNDS = chatOptions?.maxRounds ?? 20;
     const toolUsage: Record<string, number> = {};
+    // Loop detection: map of toolName → last 3 result strings (circular buffer)
+    const toolResultHistory: Map<string, string[]> = new Map();
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
       // ── AbortSignal: cancel gracefully between rounds ──────────────────────
@@ -527,8 +534,34 @@ export class ReasoningEngine {
           }
 
           logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
-          const result = await registry.execute(toolName, args, onStage, onToolUsed, signal);
+
+          // Wrap onStage to capture written file paths for workspace memory
+          const wrappedOnStage = (msg: string): void => {
+            onStage?.(msg);
+            if (msg.startsWith('WRITE ')) {
+              const token = msg.slice(6).split(/\s+/)[0];
+              if (token && !token.startsWith('(')) sessionFilesWritten.add(token);
+            }
+          };
+
+          const result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
           toolCount++;
+
+          // ── Loop detection: stop if last 3 calls to the same tool returned
+          //    identical results (indicates a stuck reasoning loop) ────────────
+          const hist = toolResultHistory.get(toolName) ?? [];
+          hist.push(result);
+          if (hist.length > 3) hist.shift();
+          toolResultHistory.set(toolName, hist);
+          if (hist.length === 3 && hist[0] === hist[1] && hist[1] === hist[2]) {
+            logger.warn(`[reasoning-engine] Loop detected: ${toolName} returned identical result 3 times`);
+            return {
+              role:        'tool',
+              content:     `Tool ${toolName} returned the same result 3 consecutive times — possible loop detected. Summarise what you have found so far and proceed with the task.`,
+              tool_call_id: toolCall.id,
+            };
+          }
+
           return { role: 'tool', content: result, tool_call_id: toolCall.id };
         };
 
@@ -559,9 +592,13 @@ export class ReasoningEngine {
 
         // Record successful task in workspace intelligence (best-effort)
         if (this.workspace && finalAnswer && toolCount > 0) {
-          const shortProblem = input.slice(0, 120);
+          const shortProblem  = input.slice(0, 120);
           const shortSolution = finalAnswer.slice(0, 300);
-          this.workspace.recordSuccess(shortProblem, shortSolution, []);
+          this.workspace.recordSuccess(
+            shortProblem,
+            shortSolution,
+            Array.from(sessionFilesWritten),
+          );
           void this.workspace.save();
         }
 

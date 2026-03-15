@@ -4,6 +4,8 @@ import { gitBranch, gitStatus, gitDiff, gitLog, gitAdd, gitCommit, gitPush, gitC
 import { applyPatch } from './patch-tools.js';
 import { fetchUrl } from './web-tools.js';
 import { replaceText, insertAfterPattern } from './diff-tools.js';
+import { editFile } from './edit-file.js';
+import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
 import * as path from 'node:path';
 
@@ -17,10 +19,12 @@ import * as path from 'node:path';
  *   const result = await registry.execute('git_branch', {}); // run a tool call
  */
 export class ToolRegistry {
-  private sandbox: SandboxManager;
+  private sandbox:  SandboxManager;
+  private explorer: RepoExplorer;
 
   constructor(private rootPath: string) {
-    this.sandbox = new SandboxManager(rootPath);
+    this.sandbox  = new SandboxManager(rootPath);
+    this.explorer = new RepoExplorer(rootPath);
   }
 
   /**
@@ -320,9 +324,42 @@ export class ToolRegistry {
       {
         type: 'function',
         function: {
+          name: 'edit_file',
+          description:
+            'Make a targeted edit to an existing file by replacing an exact, unique string with new content. ' +
+            'PREFERRED over write_file for editing existing files. ' +
+            'Rules: (1) old_string must appear EXACTLY ONCE in the file — include enough surrounding context to make it unique. ' +
+            '(2) Never use this to create new files — use write_file for that. ' +
+            'Returns a preview of the file after the edit for self-verification.',
+          parameters: {
+            type: 'object',
+            properties: {
+              file_path: {
+                type: 'string',
+                description: 'File path relative to the repository root.',
+              },
+              old_string: {
+                type: 'string',
+                description:
+                  'Exact string to find and replace. Must appear exactly once in the file. ' +
+                  'Include 2–3 lines of surrounding context if the target line is not unique.',
+              },
+              new_string: {
+                type: 'string',
+                description: 'Replacement text for old_string.',
+              },
+            },
+            required: ['file_path', 'old_string', 'new_string'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
           name: 'replace_text',
           description:
-            'Replace the first occurrence of a specific text string in a file. Prefer this over write_file for surgical edits where you know the exact text to change.',
+            '[DEPRECATED — prefer edit_file which enforces uniqueness] ' +
+            'Replace the first occurrence of a specific text string in a file.',
           parameters: {
             type: 'object',
             properties: {
@@ -348,6 +385,7 @@ export class ToolRegistry {
         function: {
           name: 'insert_after_pattern',
           description:
+            '[DEPRECATED — prefer edit_file] ' +
             'Insert a block of text immediately after the first line that matches a given regex pattern in a file.',
           parameters: {
             type: 'object',
@@ -366,6 +404,75 @@ export class ToolRegistry {
               },
             },
             required: ['filePath', 'pattern', 'text'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'search_files',
+          description:
+            'Find files whose paths match a glob pattern (e.g. "src/**/*.ts", "tests/**/auth*"). ' +
+            'Use this BEFORE read_file when you are not sure of the exact file path. ' +
+            'Returns up to 500 relative file paths.',
+          parameters: {
+            type: 'object',
+            properties: {
+              pattern: {
+                type: 'string',
+                description:
+                  'Glob pattern relative to the repository root. ' +
+                  'Supports * (any chars except /), ** (any path segment), ? (single char).',
+              },
+            },
+            required: ['pattern'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'grep_code',
+          description:
+            'Search all source files for lines matching a text string or regex. ' +
+            'Use this to find usages of a symbol, identifier, or pattern across the codebase. ' +
+            'Returns up to 100 matches with file path and line number.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description:
+                  'Text to search for. Can be a plain string (case-insensitive) or a ' +
+                  'regex literal like "/export\\s+class/i".',
+              },
+              file_glob: {
+                type: 'string',
+                description: 'Optional glob pattern to restrict which files are searched (e.g. "**/*.ts").',
+              },
+            },
+            required: ['query'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'list_directory',
+          description:
+            'List the immediate contents of a directory (non-recursive). ' +
+            'Shows files and subdirectories with file sizes. ' +
+            'Use this to orient yourself before diving deeper into a subdirectory.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description:
+                  'Directory path relative to the repository root. Use "." for the repository root.',
+              },
+            },
+            required: ['path'],
           },
         },
       },
@@ -470,10 +577,34 @@ export class ToolRegistry {
         const filePath = String(args['path'] ?? '');
         const pathErr = this.assertPathSafe(filePath);
         if (pathErr) return done(pathErr);
-        const lineCount = String(args['content'] ?? '').split('\n').length;
+        const content = String(args['content'] ?? '');
+        const lineCount = content.split('\n').length;
         onStage?.(`WRITE ${filePath} (${lineCount} lines)`);
-        const result = await writeFile(filePath, String(args['content'] ?? ''), this.rootPath);
-        return done(result.success ? 'File written successfully.' : `Error: ${result.error}`);
+        const result = await writeFile(filePath, content, this.rootPath);
+        if (!result.success) return done(`Error: ${result.error}`);
+        // Self-verification: return first 20 lines so model can confirm the write
+        const preview = content.split('\n').slice(0, 20).join('\n');
+        return done(
+          `File written successfully (${lineCount} lines).\n\nFile preview (first 20 lines):\n\`\`\`\n${preview}\n\`\`\``,
+        );
+      }
+
+      case 'edit_file': {
+        const filePath = String(args['file_path'] ?? '');
+        const pathErr  = this.assertPathSafe(filePath);
+        if (pathErr) return done(pathErr);
+        const oldString = String(args['old_string'] ?? '');
+        const newString = String(args['new_string'] ?? '');
+        onStage?.(`WRITE ${filePath} (edit)`);
+        try {
+          const result = await editFile(filePath, oldString, newString, this.rootPath);
+          return done(
+            `Edited ${filePath} — ${result.linesChanged} line(s) changed.\n\n` +
+            `File preview (first 20 lines — verify the change is correct):\n\`\`\`\n${result.preview}\n\`\`\``,
+          );
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
       }
 
       case 'apply_patch': {
@@ -575,6 +706,53 @@ export class ToolRegistry {
         const absPath = path.resolve(this.rootPath, filePath);
         try {
           return done(await insertAfterPattern(absPath, pattern, text));
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
+      }
+
+      case 'search_files': {
+        const pattern = String(args['pattern'] ?? '');
+        onStage?.(`SEARCH files matching "${pattern}"`);
+        try {
+          const matches = await this.explorer.searchFiles(pattern);
+          if (matches.length === 0) return done('No files found matching the pattern.');
+          return done(matches.map((m) => m.relativePath).join('\n'));
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
+      }
+
+      case 'grep_code': {
+        const query    = String(args['query'] ?? '');
+        const fileGlob = args['file_glob'] ? String(args['file_glob']) : undefined;
+        onStage?.(`SEARCH grep "${query}"${fileGlob ? ` in ${fileGlob}` : ''}`);
+        try {
+          const matches = await this.explorer.grepCode(query, fileGlob);
+          if (matches.length === 0) return done('No matches found.');
+          return done(
+            matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n'),
+          );
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
+      }
+
+      case 'list_directory': {
+        const dirPath = String(args['path'] ?? '.');
+        onStage?.(`READ ${dirPath}/`);
+        try {
+          const entries = await this.explorer.listDirectory(dirPath);
+          if (entries.length === 0) return done('Directory is empty.');
+          return done(
+            entries
+              .map((e) => {
+                if (e.type === 'directory') return `${e.name}/`;
+                const size = e.size !== undefined ? ` (${e.size} B)` : '';
+                return `${e.name}${size}`;
+              })
+              .join('\n'),
+          );
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }

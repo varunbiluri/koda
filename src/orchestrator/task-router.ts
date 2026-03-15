@@ -3,9 +3,15 @@ import { logger } from '../utils/logger.js';
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export enum TaskComplexity {
-  SIMPLE  = 'SIMPLE',
-  MEDIUM  = 'MEDIUM',
-  COMPLEX = 'COMPLEX',
+  SIMPLE    = 'SIMPLE',
+  MEDIUM    = 'MEDIUM',
+  COMPLEX   = 'COMPLEX',
+  /**
+   * DELEGATED — task is too broad for a single agent loop and should be
+   * handed to `SupervisorAgent.delegate()`, which splits it into
+   * CodingAgent / TestAgent / RefactorAgent / DocumentationAgent subtasks.
+   */
+  DELEGATED = 'DELEGATED',
 }
 
 export interface TaskClassification {
@@ -128,6 +134,22 @@ export class TaskRouter {
     );
 
     // ── Decision table (priority top-to-bottom) ────────────────────────────
+
+    // DELEGATED: multi-role tasks (implement + test, or refactor + document)
+    // detected by presence of multiple distinct complex-action categories
+    if (hasComplex) {
+      const lower = query.toLowerCase();
+      const hasImpl    = /\b(implement|build|create|add|write)\b/.test(lower);
+      const hasTest    = /\b(test|spec|tdd|coverage)\b/.test(lower);
+      const hasRefac   = /\b(refactor|clean|restructure)\b/.test(lower);
+      const hasDoc     = /\b(document|jsdoc|readme)\b/.test(lower);
+      const roleCount  = [hasImpl, hasTest, hasRefac, hasDoc].filter(Boolean).length;
+
+      if (roleCount >= 2 || (fileCount > 8 && hasComplex)) {
+        return this._result(TaskComplexity.DELEGATED, C.HIGH,
+          `Multi-role task (${roleCount} specialisations detected) or broad impact (${fileCount} files) — routing to supervisor agent`);
+      }
+    }
 
     // Both signals: action verbs outweigh questions — lean COMPLEX/MEDIUM
     if (hasSimple && hasComplex) {
