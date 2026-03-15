@@ -52,7 +52,10 @@
       "Bash(cat package.json | grep -E '\"prompts\"|\"dependencies\"' | head -5; cat package.json | python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}, indent=2\\)\\)\" 2>/dev/null | grep -E 'prompts|inquirer|chalk|ora' | head -10)",
       "Bash(ls /Users/varunbilluri/AI/*.md 2>/dev/null; ls /Users/varunbilluri/AI/docs/ 2>/dev/null)",
       "Bash(ls /Users/varunbilluri/AI/*.md)",
-      "Bash(find /Users/varunbilluri/AI/src/tools -type f -name \"*.ts\" 2>/dev/null | head -20)"
+      "Bash(find /Users/varunbilluri/AI/src/tools -type f -name \"*.ts\" 2>/dev/null | head -20)",
+      "Bash(find:*)",
+      "Read(//Users/varunbilluri/AI/**)",
+      "Bash(grep -n \"handleSlashCommand\\\\|case ''''/\" /Users/varunbilluri/AI/src/cli/session/session-manager.ts)"
     ]
   }
 }

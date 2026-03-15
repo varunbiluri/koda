@@ -42,28 +42,41 @@ export class ConversationEngine {
   /** Rolling conversation history shared across all AI turns in this session. */
   private history: ChatMessage[] = [];
   private sessionId: string = `session-${Date.now()}`;
+  /** Timeline entries from the last chat() call. */
+  private lastTimeline: Array<{ name: string; durationMs: number }> = [];
 
   constructor(ui?: UIRenderer) {
     this.ui = ui ?? new UIRenderer();
   }
 
+  getHistoryLength(): number { return this.history.length; }
+
+  resetHistory(): void {
+    this.history = [];
+    this.sessionId = `session-${Date.now()}`;
+    this.ui.resetSessionState();
+  }
+
   /**
    * Load the most recent persisted session from disk.
    * Call this once after construction if you want history continuity.
+   * Returns the number of messages restored (0 if no session found).
    */
-  async loadPersistedSession(rootPath: string): Promise<void> {
+  async loadPersistedSession(rootPath: string): Promise<number> {
     try {
       const session = await loadSession(rootPath);
       if (session && session.messages.length > 0) {
         this.history = session.messages;
         this.sessionId = session.sessionId;
+        return session.messages.length;
       }
     } catch {
       // Not fatal — start fresh
     }
+    return 0;
   }
 
-  async process(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
+  async process(input: string, ctx: ConversationContext, signal?: AbortSignal): Promise<ConversationResponse> {
     const normalized = input.trim().toLowerCase();
 
     // ── 1. Quit ──────────────────────────────────────────────────────────────
@@ -90,7 +103,7 @@ export class ConversationEngine {
 
     // ── 5. AI-first path ─────────────────────────────────────────────────────
     if (ctx.hasConfig) {
-      return this.handleWithAI(input, ctx);
+      return this.handleWithAI(input, ctx, signal);
     }
 
     // ── 6. No AI config ──────────────────────────────────────────────────────
@@ -107,11 +120,17 @@ export class ConversationEngine {
 
   // ── AI-first handler ───────────────────────────────────────────────────────
 
-  private async handleWithAI(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
+  private async handleWithAI(
+    input: string,
+    ctx: ConversationContext,
+    signal?: AbortSignal,
+  ): Promise<ConversationResponse> {
     // Record the user turn before calling AI so the history is available inside chat()
     this.history.push({ role: 'user', content: input });
 
     this.ui.renderThinking();
+    this.lastTimeline = [];
+    this.ui.resetSessionState();
 
     let assistantResponse = '';
 
@@ -119,6 +138,8 @@ export class ConversationEngine {
       const config = await loadConfig();
       const provider = new AzureAIProvider(config);
       const engine = new ReasoningEngine(ctx.index, provider);
+
+      const timeline: Array<{ name: string; durationMs: number }> = [];
 
       const metrics = await engine.chat(
         input,
@@ -135,10 +156,22 @@ export class ConversationEngine {
         },
         (stage) => this.ui.stream(stage),
         (steps) => {
-          this.ui.stream('🧠  planning');
+          this.ui.setLastPlan(steps);
           this.ui.renderPlan(steps);
         },
+        (files, tokens) => {
+          this.ui.updateContext(files, tokens);
+          this.ui.renderContext(files, tokens);
+        },
+        (toolName, durationMs) => {
+          this.ui.recordToolUsed(toolName);
+          timeline.push({ name: toolName, durationMs });
+        },
+        signal,
       );
+
+      this.lastTimeline = timeline;
+      this.ui.setTimeline(timeline);
 
       // Record the assistant turn so follow-up questions have context
       if (assistantResponse) {
@@ -160,6 +193,9 @@ export class ConversationEngine {
       this.ui.renderStreamEnd();
       if (metrics) {
         this.ui.renderExecutionSummary(metrics);
+        if (timeline.length > 0) {
+          this.ui.renderTimeline(timeline);
+        }
       }
     } catch (err) {
       // Remove the optimistically-pushed user message on failure

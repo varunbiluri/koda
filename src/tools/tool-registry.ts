@@ -4,6 +4,25 @@ import { gitBranch, gitStatus, gitDiff, gitLog, gitAdd, gitCommit, gitPush, gitC
 import { runTerminal } from './terminal-tools.js';
 import { applyPatch } from './patch-tools.js';
 import { fetchUrl } from './web-tools.js';
+import { replaceText, insertAfterPattern } from './diff-tools.js';
+import * as path from 'node:path';
+
+/**
+ * Commands that could cause irreversible data loss.
+ * The run_terminal tool refuses to execute these — use apply_patch or git tools instead.
+ */
+const DESTRUCTIVE_PATTERNS: RegExp[] = [
+  /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, // rm -rf / rm -fr
+  /\brm\s+-r\b/i,                                   // rm -r (recursive)
+  /\bgit\s+reset\s+--hard\b/,                       // git reset --hard
+  /\bgit\s+clean\s+-[a-z]*f/,                       // git clean -f / -fd
+  /\bgit\s+push\s+.*--force\b/,                     // git push --force
+  /\bdrop\s+table\b/i,                              // SQL DROP TABLE
+  /\btruncate\s+table\b/i,                          // SQL TRUNCATE TABLE
+  /\bdd\s+if=/i,                                    // dd (disk destroyer)
+  /\bmkfs\b/i,                                      // format filesystem
+  /\b:>\s*\//,                                      // truncate root files
+];
 
 /**
  * ToolRegistry — exposes Koda's tool implementations as AI-callable definitions.
@@ -118,7 +137,7 @@ export class ToolRegistry {
         function: {
           name: 'run_terminal',
           description:
-            'Execute a shell command in the repository root. Use only for safe, read-only commands (e.g. ls, cat, grep). Destructive commands require user approval.',
+            'Run terminal commands in the project environment. Potentially destructive commands such as rm -rf, git reset --hard, or system-level modifications are blocked by safety guards.',
           parameters: {
             type: 'object',
             properties: {
@@ -296,6 +315,58 @@ export class ToolRegistry {
           },
         },
       },
+      {
+        type: 'function',
+        function: {
+          name: 'replace_text',
+          description:
+            'Replace the first occurrence of a specific text string in a file. Prefer this over write_file for surgical edits where you know the exact text to change.',
+          parameters: {
+            type: 'object',
+            properties: {
+              filePath: {
+                type: 'string',
+                description: 'Absolute or repository-relative file path.',
+              },
+              oldText: {
+                type: 'string',
+                description: 'Exact text to find and replace.',
+              },
+              newText: {
+                type: 'string',
+                description: 'Replacement text.',
+              },
+            },
+            required: ['filePath', 'oldText', 'newText'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'insert_after_pattern',
+          description:
+            'Insert a block of text immediately after the first line that matches a given regex pattern in a file.',
+          parameters: {
+            type: 'object',
+            properties: {
+              filePath: {
+                type: 'string',
+                description: 'Absolute or repository-relative file path.',
+              },
+              pattern: {
+                type: 'string',
+                description: 'Regex pattern to match a line (first match wins).',
+              },
+              text: {
+                type: 'string',
+                description: 'Text to insert after the matched line.',
+              },
+            },
+            required: ['filePath', 'pattern', 'text'],
+          },
+        },
+      },
     ];
   }
 
@@ -303,84 +374,107 @@ export class ToolRegistry {
    * Execute a tool by name with the arguments provided by the AI.
    * Always returns a string — the AI receives this as the tool result.
    *
-   * @param onStage - Optional callback for emitting a user-visible progress message
-   *                  specific to this tool call (e.g. "📖  reading src/auth.ts").
+   * @param onStage   - Progress message callback. Messages use the structured
+   *                    label format: "READ src/auth.ts", "SEARCH \"query\"", etc.
+   * @param onTiming  - Optional callback with (toolName, durationMs) after each call.
+   *                    Used by the caller to build an execution timeline.
    */
   async execute(
     name: string,
     args: Record<string, unknown>,
     onStage?: (message: string) => void,
+    onTiming?: (name: string, durationMs: number) => void,
   ): Promise<string> {
+    const t0 = Date.now();
+    const done = (result: string): string => {
+      onTiming?.(name, Date.now() - t0);
+      return result;
+    };
+
     switch (name) {
       case 'read_file': {
         const filePath = String(args['path'] ?? '');
-        onStage?.(`📖  reading ${filePath}`);
+        onStage?.(`READ ${filePath}`);
         const result = await readFile(filePath, this.rootPath);
-        if (!result.success) return `Error: ${result.error}`;
+        if (!result.success) return done(`Error: ${result.error}`);
         const content = result.data ?? '';
-        return content.length > 8000
-          ? content.slice(0, 8000) + '\n\n[...truncated — file exceeds 8000 characters]'
-          : content;
+        return done(
+          content.length > 8000
+            ? content.slice(0, 8000) + '\n\n[...truncated — file exceeds 8000 characters]'
+            : content,
+        );
       }
 
       case 'search_code': {
         const query = String(args['query'] ?? '');
-        onStage?.(`🔍  searching for "${query}"`);
+        onStage?.(`SEARCH "${query}"`);
         const result = await searchCode(query, this.rootPath);
-        if (!result.success) return `Error: ${result.error}`;
+        if (!result.success) return done(`Error: ${result.error}`);
         const hits = result.data ?? [];
-        if (hits.length === 0) return 'No results found.';
-        return hits
-          .slice(0, 30)
-          .map((h) => `${h.file}:${h.line}: ${h.content}`)
-          .join('\n');
+        if (hits.length === 0) return done('No results found.');
+        return done(
+          hits
+            .slice(0, 30)
+            .map((h) => `${h.file}:${h.line}: ${h.content}`)
+            .join('\n'),
+        );
       }
 
       case 'list_files': {
         const dirPath = String(args['path'] ?? '.');
-        onStage?.(`📁  listing ${dirPath}`);
+        onStage?.(`READ ${dirPath}/`);
         const result = await listFiles(dirPath, this.rootPath);
-        return result.success ? (result.data ?? []).join('\n') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? []).join('\n') : `Error: ${result.error}`);
       }
 
       case 'git_branch': {
-        onStage?.('🔧  git branch');
+        onStage?.('GIT branch');
         const result = await gitBranch(this.rootPath);
-        return result.success ? (result.data ?? 'unknown') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? 'unknown') : `Error: ${result.error}`);
       }
 
       case 'git_status': {
-        onStage?.('🔧  git status');
+        onStage?.('GIT status');
         const result = await gitStatus(this.rootPath);
-        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
       }
 
       case 'git_diff': {
-        onStage?.('🔧  git diff');
+        onStage?.('GIT diff');
         const result = await gitDiff(this.rootPath);
-        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
       }
 
       case 'git_log': {
-        onStage?.('🔧  git log');
+        onStage?.('GIT log');
         const count = typeof args['count'] === 'number' ? args['count'] : 10;
         const result = await gitLog(count, this.rootPath);
-        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
       }
 
       case 'run_terminal': {
         const command = String(args['command'] ?? '');
-        onStage?.(`⚙  running: ${command}`);
+
+        // ── Safety: refuse destructive commands ──────────────────────────────
+        if (DESTRUCTIVE_PATTERNS.some((p) => p.test(command))) {
+          return done(
+            `Error: Refusing to execute potentially destructive command: "${command}". ` +
+            `Use apply_patch to edit files or git tools to manage the repository safely.`,
+          );
+        }
+
+        onStage?.(`RUN ${command}`);
         const result = await runTerminal(command, this.rootPath);
-        if (!result.success) return `Error: ${result.error}`;
-        return result.data?.stdout ?? '';
+        if (!result.success) return done(`Error: ${result.error}`);
+        return done(result.data?.stdout ?? '');
       }
 
       case 'write_file': {
         const filePath = String(args['path'] ?? '');
-        onStage?.(`✏  writing ${filePath}`);
+        const lineCount = String(args['content'] ?? '').split('\n').length;
+        onStage?.(`WRITE ${filePath} (${lineCount} lines)`);
         const result = await writeFile(filePath, String(args['content'] ?? ''), this.rootPath);
-        return result.success ? 'File written successfully.' : `Error: ${result.error}`;
+        return done(result.success ? 'File written successfully.' : `Error: ${result.error}`);
       }
 
       case 'apply_patch': {
@@ -388,66 +482,95 @@ export class ToolRegistry {
         const startLine = Number(args['startLine'] ?? 1);
         const endLine = Number(args['endLine'] ?? startLine);
         const replacement = String(args['replacement'] ?? '');
-        onStage?.(`✏  patching ${filePath} (lines ${startLine}–${endLine})`);
+        onStage?.(`WRITE ${filePath} (lines ${startLine}–${endLine})`);
         const result = await applyPatch(filePath, startLine, endLine, replacement, this.rootPath);
-        if (!result.success) return `Error: ${result.error}`;
+        if (!result.success) return done(`Error: ${result.error}`);
         const d = result.data!;
-        return `Patched ${d.filePath}: replaced ${d.linesReplaced} line(s) with ${d.linesInserted} line(s).`;
+        return done(`Patched ${d.filePath}: replaced ${d.linesReplaced} line(s) with ${d.linesInserted} line(s).`);
       }
 
       case 'git_add': {
         const files = Array.isArray(args['files']) ? (args['files'] as string[]) : [];
-        onStage?.(`🔧  git add ${files.join(' ')}`);
+        onStage?.(`GIT add ${files.join(' ')}`);
         const errors: string[] = [];
         for (const f of files) {
           const result = await gitAdd(String(f), this.rootPath);
           if (!result.success) errors.push(result.error ?? f);
         }
-        return errors.length === 0
-          ? `Staged: ${files.join(', ')}`
-          : `Errors: ${errors.join('; ')}`;
+        return done(
+          errors.length === 0
+            ? `Staged: ${files.join(', ')}`
+            : `Errors: ${errors.join('; ')}`,
+        );
       }
 
       case 'git_commit': {
         const message = String(args['message'] ?? '');
-        onStage?.('🔧  git commit');
+        onStage?.(`GIT commit "${message.slice(0, 50)}${message.length > 50 ? '…' : ''}"`);
         const result = await gitCommit(message, this.rootPath);
-        return result.success ? (result.data ?? 'Committed.') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? 'Committed.') : `Error: ${result.error}`);
       }
 
       case 'git_push': {
         const branch = String(args['branch'] ?? '');
-        onStage?.(`🔧  git push origin ${branch}`);
+        onStage?.(`GIT push origin ${branch}`);
         const result = await gitPush(branch, this.rootPath);
-        return result.success ? (result.data ?? 'Pushed.') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? 'Pushed.') : `Error: ${result.error}`);
       }
 
       case 'git_create_pr': {
         const title = String(args['title'] ?? '');
+        onStage?.(`GIT create-pr "${title.slice(0, 50)}${title.length > 50 ? '…' : ''}"`);
         const body = String(args['body'] ?? '');
-        onStage?.('🔧  creating pull request');
         const result = await gitCreatePr(title, body, this.rootPath);
-        return result.success ? (result.data ?? 'Pull request created.') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? 'Pull request created.') : `Error: ${result.error}`);
       }
 
       case 'fetch_url': {
         const url = String(args['url'] ?? '');
-        onStage?.(`🌐  fetching ${url}`);
+        const display = url.length > 60 ? url.slice(0, 57) + '…' : url;
+        onStage?.(`FETCH ${display}`);
         const result = await fetchUrl(url);
-        return result.success ? (result.data ?? '') : `Error: ${result.error}`;
+        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
       }
 
       case 'koda_commit': {
         const message = String(args['message'] ?? '');
         const files = Array.isArray(args['files']) ? (args['files'] as string[]) : ['.'];
-        onStage?.('🤖  committing as Koda AI');
+        onStage?.('COMMIT koda-ai');
         const result = await createKodaCommit(message, this.rootPath, files);
-        if (!result.success) return `Error: ${result.error}`;
-        return `✔ Committed ${result.data!.hash} — ${message}\nCo-authored-by: Koda AI`;
+        if (!result.success) return done(`Error: ${result.error}`);
+        return done(`Committed ${result.data!.hash} — ${message}\nCo-authored-by: Koda AI`);
+      }
+
+      case 'replace_text': {
+        const filePath = String(args['filePath'] ?? '');
+        onStage?.(`WRITE ${filePath} (replace text)`);
+        const oldText = String(args['oldText'] ?? '');
+        const newText = String(args['newText'] ?? '');
+        const absPath = path.resolve(this.rootPath, filePath);
+        try {
+          return done(await replaceText(absPath, oldText, newText));
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
+      }
+
+      case 'insert_after_pattern': {
+        const filePath = String(args['filePath'] ?? '');
+        const pattern = String(args['pattern'] ?? '');
+        onStage?.(`WRITE ${filePath} (insert after /${pattern}/)`);
+        const text = String(args['text'] ?? '');
+        const absPath = path.resolve(this.rootPath, filePath);
+        try {
+          return done(await insertAfterPattern(absPath, pattern, text));
+        } catch (err) {
+          return done(`Error: ${(err as Error).message}`);
+        }
       }
 
       default:
-        return `Unknown tool: ${name}`;
+        return done(`Unknown tool: ${name}`);
     }
   }
 }
