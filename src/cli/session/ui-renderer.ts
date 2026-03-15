@@ -2,6 +2,8 @@ import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import type { FilePatch } from '../../patch/types.js';
 import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
+import type { ExecutionPlan, PlanStep } from '../../ai/reasoning/planning-engine.js';
+import type { ExecutionMetrics } from '../../execution/plan-executor.js';
 
 export interface HeaderContext {
   repoName: string;
@@ -17,20 +19,23 @@ export interface ProgressStage {
 // ── Structured operation labels (7-char fixed width for visual alignment) ─────
 
 const L = {
-  READ:    chalk.cyan('READ   '),
-  SEARCH:  chalk.cyan('SEARCH '),
-  WRITE:   chalk.yellow('WRITE  '),
-  RUN:     chalk.blue('RUN    '),
-  GIT:     chalk.blue('GIT    '),
-  FETCH:   chalk.blue('FETCH  '),
-  COMMIT:  chalk.green('COMMIT '),
-  PLAN:    chalk.bold.cyan('PLAN   '),
-  CONTEXT: chalk.gray('CONTEXT'),
-  INFO:    chalk.gray('INFO   '),
-  WARN:    chalk.yellow('WARN   '),
-  ERROR:   chalk.red.bold('ERROR  '),
-  OK:      chalk.green('OK     '),
-  TOOLS:   chalk.bold('TOOLS  '),
+  READ:       chalk.cyan('READ   '),
+  SEARCH:     chalk.cyan('SEARCH '),
+  WRITE:      chalk.yellow('WRITE  '),
+  RUN:        chalk.blue('RUN    '),
+  GIT:        chalk.blue('GIT    '),
+  FETCH:      chalk.blue('FETCH  '),
+  COMMIT:     chalk.green('COMMIT '),
+  PLAN:       chalk.bold.cyan('PLAN   '),
+  CONTEXT:    chalk.gray('CONTEXT'),
+  INFO:       chalk.gray('INFO   '),
+  WARN:       chalk.yellow('WARN   '),
+  ERROR:      chalk.red.bold('ERROR  '),
+  OK:         chalk.green('OK     '),
+  TOOLS:      chalk.bold('TOOLS  '),
+  WORKTREE:   chalk.magenta('WKTREE '),
+  PERMISSION: chalk.yellow('PERM   '),
+  AGENT:      chalk.bold.magenta('AGENT  '),
 } as const;
 
 // Stage key → structured label (for legacy stage-key callers)
@@ -47,15 +52,18 @@ const STAGE_MAP: Record<string, string> = {
 /** Parse a raw stage string into label + detail for display. */
 function parseStage(raw: string): { label: string; detail: string } {
   // Structured format emitted by tool-registry (e.g. "READ src/auth.ts")
-  if (raw.startsWith('READ '))    return { label: L.READ,   detail: raw.slice(5) };
-  if (raw.startsWith('SEARCH '))  return { label: L.SEARCH, detail: raw.slice(7) };
-  if (raw.startsWith('WRITE '))   return { label: L.WRITE,  detail: raw.slice(6) };
-  if (raw.startsWith('RUN '))     return { label: L.RUN,    detail: raw.slice(4) };
-  if (raw.startsWith('GIT '))     return { label: L.GIT,    detail: raw.slice(4) };
-  if (raw.startsWith('FETCH '))   return { label: L.FETCH,  detail: raw.slice(6) };
-  if (raw.startsWith('COMMIT '))  return { label: L.COMMIT, detail: raw.slice(7) };
-  if (raw.startsWith('WARN '))    return { label: L.WARN,   detail: raw.slice(5) };
-  if (raw.startsWith('INFO '))    return { label: L.INFO,   detail: raw.slice(5) };
+  if (raw.startsWith('READ '))       return { label: L.READ,       detail: raw.slice(5) };
+  if (raw.startsWith('SEARCH '))     return { label: L.SEARCH,     detail: raw.slice(7) };
+  if (raw.startsWith('WRITE '))      return { label: L.WRITE,      detail: raw.slice(6) };
+  if (raw.startsWith('RUN '))        return { label: L.RUN,        detail: raw.slice(4) };
+  if (raw.startsWith('GIT '))        return { label: L.GIT,        detail: raw.slice(4) };
+  if (raw.startsWith('FETCH '))      return { label: L.FETCH,      detail: raw.slice(6) };
+  if (raw.startsWith('COMMIT '))     return { label: L.COMMIT,     detail: raw.slice(7) };
+  if (raw.startsWith('WARN '))       return { label: L.WARN,       detail: raw.slice(5) };
+  if (raw.startsWith('INFO '))       return { label: L.INFO,       detail: raw.slice(5) };
+  if (raw.startsWith('WORKTREE '))   return { label: L.WORKTREE,   detail: raw.slice(9) };
+  if (raw.startsWith('PERMISSION ')) return { label: L.PERMISSION, detail: raw.slice(11) };
+  if (raw.startsWith('AGENT '))      return { label: L.AGENT,      detail: raw.slice(6) };
   // Map legacy stage keys
   const mapped = STAGE_MAP[raw];
   if (mapped) return parseStage(mapped);
@@ -348,6 +356,58 @@ export class UIRenderer {
       console.log(`  ${chalk.cyan(' →')} ${chalk.gray(String(i + 1) + '.')} ${step}`);
     });
     console.log();
+  }
+
+  // ── Structured execution plan display ────────────────────────────────────
+
+  /**
+   * Render a structured ExecutionPlan (from PlanningEngine).
+   * Shows step numbers, descriptions, and wires up the PlanTracker for progress.
+   */
+  renderExecutionPlan(plan: ExecutionPlan): void {
+    const steps = plan.steps.map((s: PlanStep) => s.description);
+    this.setLastPlan(steps);
+    this.planTracker.setSteps(steps);
+  }
+
+  /**
+   * Advance the plan tracker to the next step.
+   * Call this after each step completes.
+   */
+  advancePlan(): void {
+    this.planTracker.advance();
+  }
+
+  /**
+   * Render the full execution summary after a MEDIUM-path feature run.
+   */
+  renderFeatureExecutionSummary(
+    metrics: Omit<ExecutionMetrics, 'verificationStatus'> & { verificationStatus: string },
+  ): void {
+    const verColor =
+      metrics.verificationStatus === 'PASSED' ? chalk.green : chalk.red;
+
+    console.log();
+    console.log('  ' + chalk.bold('Execution Summary'));
+    console.log();
+    console.log(
+      `  ${chalk.gray('Steps executed:')} ${chalk.white(String(metrics.stepsExecuted))}`,
+    );
+    console.log(
+      `  ${chalk.gray('Files modified:')} ${chalk.white(String(metrics.filesModified.length))}`,
+    );
+    console.log(
+      `  ${chalk.gray('Tools used:')}    ${chalk.white(String(metrics.totalToolCalls))}`,
+    );
+    console.log(
+      `  ${chalk.gray('Verification:')}  ${verColor(metrics.verificationStatus)}`,
+    );
+    console.log();
+
+    if (metrics.filesModified.length > 0) {
+      console.log(`  ${L.WRITE} ${chalk.gray(metrics.filesModified.join(', '))}`);
+      console.log();
+    }
   }
 
   // ── Context visibility ────────────────────────────────────────────────────

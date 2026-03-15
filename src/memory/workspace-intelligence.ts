@@ -133,8 +133,13 @@ export class WorkspaceIntelligence {
   /**
    * Record a successful task outcome.
    *
+   * Stores: problem, solution, filesModified (= filesChanged), and timestamp.
    * If an existing pattern with the same problem string already exists,
    * its solution and files are updated and its hit counter incremented.
+   *
+   * @param problem      - Short description of the task / question.
+   * @param solution     - What was done to resolve it (first 300 chars of response).
+   * @param filesChanged - Files that were modified during execution (from ExecutionMetrics).
    */
   recordSuccess(
     problem:      string,
@@ -145,17 +150,19 @@ export class WorkspaceIntelligence {
       (p) => p.problem.toLowerCase() === problem.toLowerCase(),
     );
 
+    const now = new Date().toISOString();
+
     if (existing) {
       existing.solution     = solution;
       existing.filesChanged = filesChanged;
-      existing.recordedAt   = new Date().toISOString();
+      existing.recordedAt   = now;
       existing.hits++;
     } else {
       this.store.patterns.push({
         problem,
         solution,
         filesChanged,
-        recordedAt: new Date().toISOString(),
+        recordedAt: now,
         hits:       0,
       });
     }
@@ -216,13 +223,20 @@ export class WorkspaceIntelligence {
    *
    * Returns an empty string when no relevant patterns exist.
    */
+  /**
+   * Format the top 3 most-relevant past solutions for injection into the
+   * AI system prompt.  Includes the files that were modified so the model
+   * can infer which files are typically touched for similar tasks.
+   *
+   * Returns an empty string when no relevant patterns exist.
+   */
   formatForPrompt(query: string, limit = 3): string {
     const patterns = this.getRelevantPatterns(query, limit);
     if (patterns.length === 0) return '';
 
     const lines: string[] = [
       '',
-      '## Past Solutions (from workspace memory)',
+      '## Past Solutions (workspace memory — top 3 similar tasks)',
       '',
     ];
 
@@ -230,7 +244,7 @@ export class WorkspaceIntelligence {
       lines.push(`**Problem:** ${p.problem}`);
       lines.push(`**Solution:** ${p.solution}`);
       if (p.filesChanged.length > 0) {
-        lines.push(`**Files:** ${p.filesChanged.slice(0, 5).join(', ')}`);
+        lines.push(`**Files modified:** ${p.filesChanged.slice(0, 5).join(', ')}`);
       }
       lines.push('');
     }
