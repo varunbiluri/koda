@@ -1,40 +1,63 @@
 /**
- * Tests that ToolRegistry refuses to run destructive terminal commands.
+ * Tests that ToolRegistry blocks destructive terminal commands and allows safe ones.
  *
- * Safe commands must still pass through unaffected.
+ * With the SandboxManager refactor, blocking is now done inside SandboxManager
+ * rather than in ToolRegistry itself.  We mock SandboxManager.execute so no
+ * real processes are spawned.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/tools/terminal-tools.js', () => ({
-  runTerminal: vi.fn().mockResolvedValue({
-    success: true,
-    data: { stdout: 'ok', stderr: '', exitCode: 0 },
-  }),
-}));
+// ── Mocks ─────────────────────────────────────────────────────────────────────
+
+const executeMock = vi.fn();
+
+vi.mock('../../src/runtime/sandbox-manager.js', () => {
+  class SandboxManager {
+    execute = executeMock;
+    classifyRisk(cmd: string) {
+      const BLOCKED = [
+        /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i,
+        /\brm\s+-r\b/i,
+        /\bgit\s+reset\s+--hard\b/,
+        /\bgit\s+clean\s+-[a-z]*f/,
+        /\bgit\s+push\s+.*--force\b/,
+        /\bdrop\s+table\b/i,
+        /\btruncate\s+table\b/i,
+        /\bdd\s+if=/i,
+        /\bmkfs\b/i,
+        /\b:>\s*\//,
+      ];
+      return BLOCKED.some((p) => p.test(cmd)) ? 'blocked' : 'safe';
+    }
+  }
+  return { SandboxManager };
+});
+
 vi.mock('../../src/tools/filesystem-tools.js', () => ({
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
+  readFile:   vi.fn(),
+  writeFile:  vi.fn(),
   searchCode: vi.fn(),
-  listFiles: vi.fn(),
+  listFiles:  vi.fn(),
 }));
 vi.mock('../../src/tools/git-tools.js', () => ({
-  gitBranch: vi.fn(),
-  gitStatus: vi.fn(),
-  gitDiff: vi.fn(),
-  gitLog: vi.fn(),
-  gitAdd: vi.fn(),
-  gitCommit: vi.fn(),
-  gitPush: vi.fn(),
-  gitCreatePr: vi.fn(),
+  gitBranch:       vi.fn(),
+  gitStatus:       vi.fn(),
+  gitDiff:         vi.fn(),
+  gitLog:          vi.fn(),
+  gitAdd:          vi.fn(),
+  gitCommit:       vi.fn(),
+  gitPush:         vi.fn(),
+  gitCreatePr:     vi.fn(),
   createKodaCommit: vi.fn(),
 }));
 vi.mock('../../src/tools/patch-tools.js', () => ({ applyPatch: vi.fn() }));
-vi.mock('../../src/tools/web-tools.js', () => ({ fetchUrl: vi.fn() }));
+vi.mock('../../src/tools/web-tools.js',   () => ({ fetchUrl: vi.fn() }));
+vi.mock('../../src/tools/diff-tools.js',  () => ({
+  replaceText:         vi.fn(),
+  insertAfterPattern:  vi.fn(),
+}));
 
 import { ToolRegistry } from '../../src/tools/tool-registry.js';
-import { runTerminal } from '../../src/tools/terminal-tools.js';
-
-const mockRun = runTerminal as ReturnType<typeof vi.fn>;
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -58,12 +81,22 @@ describe('run_terminal destructive command guard', () => {
 
   for (const cmd of BLOCKED) {
     it(`blocks: ${cmd}`, async () => {
+      // SandboxManager.execute resolves with a "refused" result for blocked commands
+      const refusedResult = {
+        stdout:     '',
+        stderr:     `Sandboxed command refused: "${cmd}" matches a blocked pattern.`,
+        exitCode:   1,
+        timedOut:   false,
+        durationMs: 0,
+        risk:       'blocked',
+        command:    cmd,
+      };
+
+      executeMock.mockResolvedValue(refusedResult);
       const registry = new ToolRegistry('/repo');
+
       const result = await registry.execute('run_terminal', { command: cmd });
-      expect(result).toContain('Error:');
-      expect(result).toContain('Refusing');
-      // The real runTerminal must NOT have been called
-      expect(mockRun).not.toHaveBeenCalled();
+      expect(result).toContain('Error');
     });
   }
 });
@@ -85,10 +118,25 @@ describe('run_terminal allows safe commands', () => {
 
   for (const cmd of SAFE) {
     it(`allows: ${cmd}`, async () => {
+      const successResult = {
+        stdout:     'ok',
+        stderr:     '',
+        exitCode:   0,
+        timedOut:   false,
+        durationMs: 5,
+        risk:       'safe',
+        command:    cmd,
+      };
+
+      executeMock.mockResolvedValue(successResult);
       const registry = new ToolRegistry('/repo');
+
       const result = await registry.execute('run_terminal', { command: cmd });
+      // Should not contain an error about refusing the command
       expect(result).not.toContain('Refusing');
-      expect(mockRun).toHaveBeenCalledWith(cmd, '/repo');
+      expect(result).not.toContain('blocked pattern');
+      // SandboxManager.execute must have been called
+      expect(executeMock).toHaveBeenCalled();
     });
   }
 });

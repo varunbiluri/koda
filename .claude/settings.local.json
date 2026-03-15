@@ -55,7 +55,13 @@
       "Bash(find /Users/varunbilluri/AI/src/tools -type f -name \"*.ts\" 2>/dev/null | head -20)",
       "Bash(find:*)",
       "Read(//Users/varunbilluri/AI/**)",
-      "Bash(grep -n \"handleSlashCommand\\\\|case ''''/\" /Users/varunbilluri/AI/src/cli/session/session-manager.ts)"
+      "Bash(grep -n \"handleSlashCommand\\\\|case ''''/\" /Users/varunbilluri/AI/src/cli/session/session-manager.ts)",
+      "Bash(npm view:*)",
+      "Bash(npm whoami:*)",
+      "Bash(npm pack:*)",
+      "Bash(npm login:*)",
+      "Bash(npm publish:*)",
+      "Bash(npm set:*)"
     ]
   }
 }
