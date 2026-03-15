@@ -9,6 +9,7 @@ import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
 import type { ChatMessage } from '../../ai/types.js';
 import type { RepoIndex } from '../../types/index.js';
+import { loadSession, saveSession } from '../../memory/conversation-store.js';
 
 export interface ConversationContext {
   rootPath: string;
@@ -40,9 +41,26 @@ export class ConversationEngine {
   private ui: UIRenderer;
   /** Rolling conversation history shared across all AI turns in this session. */
   private history: ChatMessage[] = [];
+  private sessionId: string = `session-${Date.now()}`;
 
   constructor(ui?: UIRenderer) {
     this.ui = ui ?? new UIRenderer();
+  }
+
+  /**
+   * Load the most recent persisted session from disk.
+   * Call this once after construction if you want history continuity.
+   */
+  async loadPersistedSession(rootPath: string): Promise<void> {
+    try {
+      const session = await loadSession(rootPath);
+      if (session && session.messages.length > 0) {
+        this.history = session.messages;
+        this.sessionId = session.sessionId;
+      }
+    } catch {
+      // Not fatal — start fresh
+    }
   }
 
   async process(input: string, ctx: ConversationContext): Promise<ConversationResponse> {
@@ -125,6 +143,18 @@ export class ConversationEngine {
       // Record the assistant turn so follow-up questions have context
       if (assistantResponse) {
         this.history.push({ role: 'assistant', content: assistantResponse });
+      }
+
+      // Cap history at 50 messages (summarization handled by ReasoningEngine)
+      if (this.history.length > 50) {
+        this.history = this.history.slice(-50);
+      }
+
+      // Persist session to disk (best-effort)
+      try {
+        await saveSession(this.history, ctx.rootPath, this.sessionId);
+      } catch {
+        // Non-fatal — session persistence failure should not interrupt the user
       }
 
       this.ui.renderStreamEnd();
