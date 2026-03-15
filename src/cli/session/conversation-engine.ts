@@ -13,6 +13,9 @@ import { logger } from '../../utils/logger.js';
 import type { ChatMessage } from '../../ai/types.js';
 import type { RepoIndex } from '../../types/index.js';
 import { loadSession, saveSession } from '../../memory/conversation-store.js';
+import { PlanningEngine } from '../../ai/reasoning/planning-engine.js';
+import { PlanExecutor } from '../../execution/plan-executor.js';
+import { VerificationLoop } from '../../execution/verification-engine.js';
 
 export interface ConversationContext {
   rootPath: string;
@@ -169,15 +172,13 @@ export class ConversationEngine {
         logger.info(`[router] Routing to agent orchestrator — ${reason}`);
         assistantResponse = await this._runWithOrchestrator(input, ctx, provider, signal);
         // Rendering already done inside _runWithOrchestrator
+      } else if (route === TaskComplexity.MEDIUM) {
+        // ── MEDIUM path — planning + structured execution + verification ───
+        logger.info(`[router] Routing to feature execution pipeline — ${reason}`);
+        assistantResponse = await this._runWithPipeline(input, ctx, provider, signal);
       } else {
-        // ── SIMPLE / MEDIUM path — ReasoningEngine.chat() ─────────────────
-        // Both tiers use the same full-capability tool-calling loop.
-        // MEDIUM is logged differently to expose the routing decision.
-        if (route === TaskComplexity.MEDIUM) {
-          logger.info(`[router] Routing to single-agent reasoning — ${reason}`);
-        } else {
-          logger.info(`[router] Routing to reasoning engine — ${reason}`);
-        }
+        // ── SIMPLE path — ReasoningEngine.chat() ─────────────────────────
+        logger.info(`[router] Routing to reasoning engine — ${reason}`);
 
         const engine   = new ReasoningEngine(ctx.index, provider);
         const timeline: Array<{ name: string; durationMs: number }> = [];
@@ -209,6 +210,7 @@ export class ConversationEngine {
             timeline.push({ name: toolName, durationMs });
           },
           signal,
+          // SIMPLE path: default 20 rounds (no per-step capping)
         );
 
         this.lastTimeline = timeline;
@@ -279,9 +281,10 @@ export class ConversationEngine {
    */
   private _routeLabel(route: TaskComplexity): string {
     switch (route) {
-      case TaskComplexity.SIMPLE:  return 'SIMPLE task — reasoning engine';
-      case TaskComplexity.MEDIUM:  return 'MEDIUM task — single-agent reasoning';
-      case TaskComplexity.COMPLEX: return 'COMPLEX task — multi-agent orchestration';
+      case TaskComplexity.SIMPLE:    return 'SIMPLE task — reasoning engine';
+      case TaskComplexity.MEDIUM:    return 'MEDIUM task — single-agent reasoning';
+      case TaskComplexity.COMPLEX:   return 'COMPLEX task — multi-agent orchestration';
+      case TaskComplexity.DELEGATED: return 'DELEGATED task — supervisor agent';
     }
   }
 
@@ -360,6 +363,142 @@ export class ConversationEngine {
         (stage)              => this.ui.stream(stage),
         (steps)              => { this.ui.setLastPlan(steps); this.ui.renderPlan(steps); },
         (files, tokens)      => { this.ui.updateContext(files, tokens); this.ui.renderContext(files, tokens); },
+        (toolName, durationMs) => { this.ui.recordToolUsed(toolName); timeline.push({ name: toolName, durationMs }); },
+        signal,
+      );
+
+      this.lastTimeline = timeline;
+      this.ui.setTimeline(timeline);
+      this.ui.renderStreamEnd();
+
+      if (metrics) {
+        this.ui.renderExecutionSummary(metrics);
+        if (timeline.length > 0) this.ui.renderTimeline(timeline);
+      }
+
+      return assistantResponse;
+    }
+  }
+
+  // ── Feature Execution Pipeline (MEDIUM route) ─────────────────────────────
+
+  /**
+   * Execute a MEDIUM-complexity task through the full Feature Execution Pipeline:
+   *   1. Context Discovery + Planning  (PlanningEngine.generateExecutionPlan)
+   *   2. Structured Execution          (PlanExecutor.execute)
+   *   3. Verification Loop             (VerificationLoop.runWithRetry)
+   *   4. Execution Summary display
+   *
+   * Falls back to ReasoningEngine.chat() on any planning/execution failure.
+   */
+  private async _runWithPipeline(
+    input:    string,
+    ctx:      ConversationContext,
+    provider: AzureAIProvider,
+    signal?:  AbortSignal,
+  ): Promise<string> {
+    const chatContext = {
+      repoName:  path.basename(ctx.rootPath),
+      branch:    ctx.branch ?? 'unknown',
+      rootPath:  ctx.rootPath,
+      fileCount: ctx.index?.metadata.fileCount ?? 0,
+    };
+
+    let assistantResponse = '';
+
+    try {
+      // ── Phase 1: Generate execution plan ────────────────────────────────
+      this.ui.stream('PLAN generating execution plan');
+
+      const planner = new PlanningEngine(provider, ctx.index);
+      const plan    = await planner.generateExecutionPlan(input, ctx.rootPath);
+
+      if (plan.steps.length === 0) {
+        logger.warn('[pipeline] Empty plan — falling back to reasoning engine');
+        throw new Error('Planning returned empty plan');
+      }
+
+      // Display plan via PlanTracker
+      this.ui.renderExecutionPlan(plan);
+
+      // ── Phase 2: Structured step-by-step execution ──────────────────────
+      const executor = new PlanExecutor(provider, ctx.index, chatContext);
+
+      const { response, metrics: execMetrics } = await executor.execute(
+        plan,
+        this.history,
+        (step, idx) => {
+          // Advance the plan tracker as each step begins
+          if (idx > 0) this.ui.advancePlan();
+          this.ui.stream(`INFO Step ${step.id}/${plan.steps.length}: ${step.description}`);
+        },
+        (stage) => {
+          this.ui.stream(stage);
+          // Track tool usage for /tools slash command
+          if (stage.startsWith('READ ') || stage.startsWith('WRITE ') ||
+              stage.startsWith('RUN ')  || stage.startsWith('GIT ')   ||
+              stage.startsWith('SEARCH ')) {
+            // Extract tool name for UI tracking (best-effort)
+          }
+        },
+        (chunk) => {
+          assistantResponse += chunk;
+          this.ui.renderStreamChunk(chunk);
+        },
+        signal,
+      );
+
+      // Advance tracker past the last step
+      this.ui.advancePlan();
+      this.ui.renderStreamEnd();
+
+      if (response && !assistantResponse) {
+        assistantResponse = response;
+      }
+
+      // ── Phase 3: Verification loop (with step context for targeted fixes) ──
+      const verifier = new VerificationLoop(provider, ctx.index, chatContext);
+      const verResult = await verifier.runWithRetry(
+        ctx.rootPath,
+        this.history,
+        (stage) => this.ui.stream(stage),
+        signal,
+        executor.getStepContexts(),
+      );
+
+      // ── Phase 4: Execution summary ───────────────────────────────────────
+      this.ui.renderFeatureExecutionSummary({
+        ...execMetrics,
+        verificationStatus: verResult.passed ? 'PASSED' : 'FAILED',
+      });
+
+      return assistantResponse;
+
+    } catch (err) {
+      // ── Graceful fallback: pipeline failed → ReasoningEngine.chat() ──────
+      const errMsg = (err as Error).message;
+      logger.warn(`[pipeline] Failed (${errMsg}); falling back to reasoning engine`);
+      this.ui.stream(`WARN Pipeline error — falling back to reasoning engine`);
+
+      const engine   = new ReasoningEngine(ctx.index, provider);
+      const timeline: Array<{ name: string; durationMs: number }> = [];
+
+      const metrics = await engine.chat(
+        input,
+        {
+          repoName:  path.basename(ctx.rootPath),
+          branch:    ctx.branch ?? 'unknown',
+          rootPath:  ctx.rootPath,
+          fileCount: ctx.index?.metadata.fileCount ?? 0,
+        },
+        this.history,
+        (chunk) => {
+          assistantResponse += chunk;
+          this.ui.renderStreamChunk(chunk);
+        },
+        (stage)                => this.ui.stream(stage),
+        (steps)                => { this.ui.setLastPlan(steps); this.ui.renderPlan(steps); },
+        (files, tokens)        => { this.ui.updateContext(files, tokens); this.ui.renderContext(files, tokens); },
         (toolName, durationMs) => { this.ui.recordToolUsed(toolName); timeline.push({ name: toolName, durationMs }); },
         signal,
       );
