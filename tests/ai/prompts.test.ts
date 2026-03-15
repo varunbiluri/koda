@@ -16,7 +16,7 @@ describe('system prompt', () => {
 describe('code analysis prompt', () => {
   it('builds a complete analysis prompt', () => {
     const metadata: IndexMetadata = {
-      version: '0.1.0',
+      version: '0.1.1',
       createdAt: '2024-01-01',
       rootPath: '/test/repo',
       fileCount: 10,
@@ -41,7 +41,7 @@ describe('code analysis prompt', () => {
 
   it('includes repository metadata', () => {
     const metadata: IndexMetadata = {
-      version: '0.1.0',
+      version: '0.1.1',
       createdAt: '2024-01-01',
       rootPath: '/my/project',
       fileCount: 100,

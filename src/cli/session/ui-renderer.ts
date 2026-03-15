@@ -33,7 +33,8 @@ export class UIRenderer {
 
   renderHeader(ctx: HeaderContext): void {
     console.log();
-    console.log(chalk.bold.cyan('  Koda') + chalk.bold(' — AI Software Engineer'));
+    console.log(chalk.bold.cyan('  Koda') + chalk.bold(' — Autonomous AI Software Engineer'));
+    console.log(chalk.gray('  Version: 0.1.1'));
     console.log();
     console.log(
       chalk.gray('  Repository: ') + chalk.white(ctx.repoName) +

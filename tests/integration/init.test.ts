@@ -33,7 +33,7 @@ describe('init integration', () => {
     await runIndexingPipeline(FIXTURE_PROJECT, { force: true });
 
     const meta = await loadIndexMetadata(FIXTURE_PROJECT);
-    expect(meta.version).toBe('0.1.0');
+    expect(meta.version).toBe('0.1.1');
     expect(meta.fileCount).toBeGreaterThan(0);
     expect(meta.chunkCount).toBeGreaterThan(0);
     expect(meta.rootPath).toBe(FIXTURE_PROJECT);

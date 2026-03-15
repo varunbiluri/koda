@@ -6,7 +6,7 @@ import type { AIProvider, ChatCompletionResponse } from '../../src/ai/types.js';
 function createMockIndex(): RepoIndex {
   return {
     metadata: {
-      version: '0.1.0',
+      version: '0.1.1',
       createdAt: '2024-01-01',
       rootPath: '/test',
       fileCount: 2,
