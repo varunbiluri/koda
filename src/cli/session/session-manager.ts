@@ -23,6 +23,10 @@ export class SessionManager {
   private ui: UIRenderer;
   private engine: ConversationEngine;
   private rl: readline.Interface | null = null;
+  /** Abort controller for the currently-running AI task. */
+  private activeAbort: AbortController | null = null;
+  /** Header context stored for /clear re-render. */
+  private headerCtx: Parameters<UIRenderer['renderHeader']>[0] | null = null;
 
   constructor(ui?: UIRenderer, engine?: ConversationEngine) {
     this.ui = ui ?? new UIRenderer();
@@ -57,7 +61,8 @@ export class SessionManager {
     }
 
     // 4. Render header
-    this.ui.renderHeader({ repoName, branch, indexStatus, model });
+    this.headerCtx = { repoName, branch, indexStatus, model };
+    this.ui.renderHeader(this.headerCtx);
 
     // 5. Setup wizard if no config
     if (!hasConfig) {
@@ -78,7 +83,14 @@ export class SessionManager {
       console.log();
     }
 
-    // 7. Start conversation loop
+    // 7. Restore persisted session history
+    const restoredCount = await this.engine.loadPersistedSession(rootPath);
+    if (restoredCount > 0) {
+      this.ui.renderInfo(`Resumed session · ${restoredCount} messages`);
+      console.log();
+    }
+
+    // 8. Start conversation loop
     this.ui.renderWelcome();
     await this.loop({ rootPath, index, hasConfig: await configExists(), branch });
   }
@@ -91,14 +103,27 @@ export class SessionManager {
       historySize: 100,
     });
 
-    // Handle Ctrl+C gracefully
+    // ── Ctrl+C: cancel active task or exit ───────────────────────────────────
     this.rl.on('SIGINT', () => {
-      console.log('\n\n  ' + chalk.gray('Goodbye!'));
-      this.rl?.close();
-      process.exit(0);
+      if (this.activeAbort) {
+        // Cancel the in-progress AI task and return to prompt
+        this.activeAbort.abort();
+        this.activeAbort = null;
+        console.log();
+        this.ui.renderInfo('Task cancelled.');
+        console.log();
+        ask();
+      } else {
+        console.log('\n\n  ' + chalk.gray('Goodbye!'));
+        this.rl?.close();
+        process.exit(0);
+      }
     });
 
     const ask = (): void => {
+      if ((process.stdout as NodeJS.WriteStream & { _lastChar?: string })._lastChar !== '\n') {
+        process.stdout.write('\n');
+      }
       this.ui.renderPrompt();
     };
 
@@ -106,23 +131,26 @@ export class SessionManager {
 
     this.rl.on('line', async (rawLine) => {
       const input = rawLine.trim();
+      if (!input) { ask(); return; }
 
-      // Skip empty lines
-      if (!input) {
+      // ── Slash commands ──────────────────────────────────────────────────────
+      if (input.startsWith('/')) {
+        await this.handleSlashCommand(input, ctx);
         ask();
         return;
       }
 
-      // Handle inline init
-      if (input.toLowerCase() === 'init' || input === '/init') {
+      // ── Inline init ─────────────────────────────────────────────────────────
+      if (input.toLowerCase() === 'init') {
         await this.handleInlineInit(ctx);
         ask();
         return;
       }
 
+      // ── AI processing with cancellable AbortController ──────────────────────
+      this.activeAbort = new AbortController();
       try {
-        const response = await this.engine.process(input, ctx);
-
+        const response = await this.engine.process(input, ctx, this.activeAbort.signal);
         if (response.shouldQuit) {
           console.log('\n  ' + chalk.gray('Goodbye!'));
           this.rl?.close();
@@ -130,15 +158,105 @@ export class SessionManager {
         }
       } catch (err) {
         this.ui.renderError((err as Error).message);
+      } finally {
+        this.activeAbort = null;
       }
 
       ask();
     });
 
-    // Keep process alive until rl closes
     await new Promise<void>((resolve) => {
       this.rl!.on('close', resolve);
     });
+  }
+
+  private async handleSlashCommand(input: string, ctx: ConversationContext): Promise<void> {
+    const cmd = input.split(' ')[0]!.toLowerCase();
+    switch (cmd) {
+      case '/help':
+        this.ui.renderHelp();
+        break;
+
+      case '/clear':
+        console.clear();
+        if (this.headerCtx) this.ui.renderHeader(this.headerCtx);
+        this.ui.renderWelcome();
+        break;
+
+      case '/reset':
+        console.clear();
+        this.engine.resetHistory();
+        if (this.headerCtx) this.ui.renderHeader(this.headerCtx);
+        this.ui.renderInfo('Session history cleared.');
+        console.log();
+        this.ui.renderWelcome();
+        break;
+
+      case '/context':
+        this.ui.slashContext();
+        break;
+
+      case '/tools':
+        this.ui.slashTools();
+        break;
+
+      case '/plan':
+        this.ui.slashPlan();
+        break;
+
+      case '/budget':
+        this.ui.slashBudget(50_000);
+        break;
+
+      case '/history':
+        this.ui.renderInfo(`Session · ${this.engine.getHistoryLength()} messages`);
+        console.log();
+        break;
+
+      case '/diff':
+        await this.handleDiff(ctx);
+        break;
+
+      case '/undo':
+        this.ui.renderInfo('Use `git checkout <file>` to revert individual file changes.');
+        console.log();
+        break;
+
+      case '/init':
+        await this.handleInlineInit(ctx);
+        break;
+
+      default:
+        this.ui.renderError(`Unknown command: ${input}`, 'Type /help for available slash commands.');
+    }
+  }
+
+  private async handleDiff(ctx: ConversationContext): Promise<void> {
+    const { execSync: exec } = await import('child_process');
+    try {
+      const diff = exec('git diff --stat HEAD', {
+        cwd: ctx.rootPath,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString().trim();
+
+      if (!diff) {
+        this.ui.renderInfo('No pending changes.');
+        console.log();
+        return;
+      }
+
+      console.log();
+      diff.split('\n').forEach(line => {
+        if (line.includes('+') && !line.startsWith('---')) {
+          process.stdout.write('  ' + line + '\n');
+        } else {
+          process.stdout.write('  ' + chalk.gray(line) + '\n');
+        }
+      });
+      console.log();
+    } catch {
+      this.ui.renderError('Could not read git diff.', 'Ensure this is a git repository.');
+    }
   }
 
   private async handleInlineInit(ctx: ConversationContext): Promise<void> {
