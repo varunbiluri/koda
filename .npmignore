@@ -1,0 +1,22 @@
+# Environment / secrets — never publish these
+.env
+.env.*
+
+# Source (compiled to dist/)
+src/
+tests/
+
+# TypeScript configs
+tsconfig*.json
+
+# Dev tools
+.claude/
+.koda/
+*.md
+!README.md
+
+# Misc
+.git/
+.gitignore
+*.test.ts
+*.spec.ts
