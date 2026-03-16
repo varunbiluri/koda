@@ -22,29 +22,29 @@ function makeHistory(count: number): ChatMessage[] {
 }
 
 describe('compressHistory', () => {
-  it('returns history unchanged when 20 or fewer messages', async () => {
-    const history = makeHistory(20);
+  it('returns history unchanged when 12 or fewer messages', async () => {
+    const history = makeHistory(12);
     const provider = makeProvider();
 
     const result = await compressHistory(history, provider);
 
-    expect(result).toHaveLength(20);
+    expect(result).toHaveLength(12);
     expect(provider.sendChatCompletion).not.toHaveBeenCalled();
   });
 
-  it('compresses history when more than 20 messages', async () => {
-    const history = makeHistory(25);
+  it('compresses history when more than 12 messages', async () => {
+    const history = makeHistory(20);
     const provider = makeProvider('Discussed auth and added tests.');
 
     const result = await compressHistory(history, provider);
 
-    // 25 messages - 10 summarized + 1 summary message = 16
-    expect(result.length).toBeLessThan(25);
+    // 20 messages - 10 summarized + 1 summary message = 11
+    expect(result.length).toBeLessThan(20);
     expect(provider.sendChatCompletion).toHaveBeenCalledOnce();
   });
 
   it('inserts a system summary message at the start', async () => {
-    const history = makeHistory(22);
+    const history = makeHistory(15);
     const provider = makeProvider('Fixed the login bug.');
 
     const result = await compressHistory(history, provider);
@@ -55,19 +55,19 @@ describe('compressHistory', () => {
   });
 
   it('preserves the newest messages after the summary', async () => {
-    const history = makeHistory(25);
+    const history = makeHistory(20);
     const provider = makeProvider();
 
     const result = await compressHistory(history, provider);
 
     // The last message of the original history should still be present
-    const lastOriginal = history[24];
+    const lastOriginal = history[19];
     const lastCompressed = result[result.length - 1];
     expect(lastCompressed.content).toBe(lastOriginal.content);
   });
 
   it('falls back gracefully when AI provider throws', async () => {
-    const history = makeHistory(22);
+    const history = makeHistory(15);
     const provider = makeProvider();
     (provider.sendChatCompletion as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('Network error'),
