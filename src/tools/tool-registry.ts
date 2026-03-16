@@ -7,6 +7,7 @@ import { replaceText, insertAfterPattern } from './diff-tools.js';
 import { editFile } from './edit-file.js';
 import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
+import { TOOL_OUTPUT_LIMITS, truncateOutput } from '../runtime/tool-output-limits.js';
 import * as path from 'node:path';
 
 
@@ -509,9 +510,7 @@ export class ToolRegistry {
         if (!result.success) return done(`Error: ${result.error}`);
         const content = result.data ?? '';
         return done(
-          content.length > 8000
-            ? content.slice(0, 8000) + '\n\n[...truncated — file exceeds 8000 characters]'
-            : content,
+          truncateOutput(content, TOOL_OUTPUT_LIMITS.READ_FILE, 'use grep_code for targeted search'),
         );
       }
 
@@ -552,7 +551,8 @@ export class ToolRegistry {
       case 'git_diff': {
         onStage?.('GIT diff');
         const result = await gitDiff(this.rootPath);
-        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
+        if (!result.success) return done(`Error: ${result.error}`);
+        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.GIT_DIFF, 'use grep_code or read_file for specific sections'));
       }
 
       case 'git_log': {
@@ -570,7 +570,7 @@ export class ToolRegistry {
           const detail = result.stderr?.trim() || result.stdout?.trim() || 'non-zero exit';
           return done(`Error (exit ${result.exitCode}): ${detail}`);
         }
-        return done(result.stdout ?? '');
+        return done(truncateOutput(result.stdout ?? '', TOOL_OUTPUT_LIMITS.RUN_TERMINAL, 'check exit code or redirect output'));
       }
 
       case 'write_file': {
@@ -663,7 +663,8 @@ export class ToolRegistry {
         const display = url.length > 60 ? url.slice(0, 57) + '…' : url;
         onStage?.(`FETCH ${display}`);
         const result = await fetchUrl(url);
-        return done(result.success ? (result.data ?? '') : `Error: ${result.error}`);
+        if (!result.success) return done(`Error: ${result.error}`);
+        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.FETCH_URL, 'fetch a more specific URL or section'));
       }
 
       case 'koda_commit': {
@@ -730,9 +731,8 @@ export class ToolRegistry {
         try {
           const matches = await this.explorer.grepCode(query, fileGlob);
           if (matches.length === 0) return done('No matches found.');
-          return done(
-            matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n'),
-          );
+          const raw = matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n');
+          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.GREP_CODE, 'narrow the query or use file_glob'));
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }
@@ -744,15 +744,14 @@ export class ToolRegistry {
         try {
           const entries = await this.explorer.listDirectory(dirPath);
           if (entries.length === 0) return done('Directory is empty.');
-          return done(
-            entries
-              .map((e) => {
-                if (e.type === 'directory') return `${e.name}/`;
-                const size = e.size !== undefined ? ` (${e.size} B)` : '';
-                return `${e.name}${size}`;
-              })
-              .join('\n'),
-          );
+          const raw = entries
+            .map((e) => {
+              if (e.type === 'directory') return `${e.name}/`;
+              const size = e.size !== undefined ? ` (${e.size} B)` : '';
+              return `${e.name}${size}`;
+            })
+            .join('\n');
+          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.LIST_DIRECTORY, 'use search_files for deeper exploration'));
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }

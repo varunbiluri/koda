@@ -4,6 +4,9 @@ import type { AIProvider, ChatMessage } from '../ai/types.js';
 import type { RepoIndex } from '../types/index.js';
 import type { ChatContext } from '../ai/reasoning/reasoning-engine.js';
 import { WorktreeManager } from '../runtime/worktree-manager.js';
+import { failureAnalyzer } from './failure-analyzer.js';
+import { ToolPlanner, formatToolPlan } from '../planning/tool-planner.js';
+import type { ToolPlan } from '../planning/tool-planner.js';
 import { logger } from '../utils/logger.js';
 
 // ── Public constants ──────────────────────────────────────────────────────────
@@ -26,13 +29,23 @@ export interface StepContext {
 }
 
 export interface ExecutionMetrics {
-  stepsExecuted:   number;
-  filesModified:   string[];
-  toolsUsed:       string[];
-  totalToolCalls:  number;
-  durationMs:      number;
-  stepContexts:    StepContext[];
-  verificationStatus: 'PASSED' | 'FAILED' | 'SKIPPED';
+  stepsExecuted:          number;
+  filesModified:          string[];
+  toolsUsed:              string[];
+  totalToolCalls:         number;
+  durationMs:             number;
+  stepContexts:           StepContext[];
+  verificationStatus:     'PASSED' | 'FAILED' | 'SKIPPED';
+  /** Number of adaptive recovery steps automatically inserted during execution. */
+  recoveryStepsInserted?: number;
+  /** Count of steps that completed without errors. */
+  successfulSteps?:       number;
+  /** Count of steps that had at least one error. */
+  failedSteps?:           number;
+  /** Task complexity label (from TaskRouter, if provided by caller). */
+  taskComplexity?:        string;
+  /** Names of specialist agents used (e.g. CodingAgent, TestAgent). */
+  agentsUsed?:            string[];
 }
 
 // ── PlanExecutor ──────────────────────────────────────────────────────────────
@@ -56,6 +69,7 @@ export class PlanExecutor {
   private totalToolCalls                  = 0;
   private stepContexts:    StepContext[]  = [];
   private worktreeManager: WorktreeManager;
+  private toolPlanner:     ToolPlanner;
 
   constructor(
     private provider:    AIProvider,
@@ -63,6 +77,7 @@ export class PlanExecutor {
     private chatContext: ChatContext,
   ) {
     this.worktreeManager = new WorktreeManager(chatContext.rootPath);
+    this.toolPlanner     = new ToolPlanner(provider);
   }
 
   /**
@@ -76,17 +91,21 @@ export class PlanExecutor {
    * @param signal     - Optional AbortSignal — cancels between steps.
    */
   async execute(
-    plan:      ExecutionPlan,
-    history:   ChatMessage[],
-    onStep?:   (step: PlanStep, index: number, total: number) => void,
-    onStage?:  (message: string) => void,
-    onChunk?:  (chunk: string) => void,
-    signal?:   AbortSignal,
-    taskName?: string,
+    plan:           ExecutionPlan,
+    history:        ChatMessage[],
+    onStep?:        (step: PlanStep, index: number, total: number) => void,
+    onStage?:       (message: string) => void,
+    onChunk?:       (chunk: string) => void,
+    signal?:        AbortSignal,
+    taskName?:      string,
+    taskComplexity?: string,
   ): Promise<{ response: string; metrics: Omit<ExecutionMetrics, 'verificationStatus'>; worktreePath?: string }> {
     const startTime = Date.now();
     let fullResponse  = '';
     let stepsExecuted = 0;
+    let recoveryStepsInserted = 0;
+    let successfulSteps = 0;
+    let failedSteps = 0;
 
     // ── Worktree isolation ─────────────────────────────────────────────────
     const effectiveTaskName = taskName ?? `task-${Date.now()}`;
@@ -107,7 +126,22 @@ export class PlanExecutor {
     const localHistory: ChatMessage[] = [...history];
     const engine = new ReasoningEngine(this.index, this.provider);
 
-    for (let i = 0; i < plan.steps.length; i++) {
+    // ── ToolPlanner: generate pre-execution tool sequence ──────────────────
+    let toolPlan: ToolPlan | null = null;
+    try {
+      const repoCtx = plan.repositoryContext ?? '';
+      toolPlan = await this.toolPlanner.generateToolPlan(plan.query, repoCtx);
+      logger.debug(`[plan-executor] ToolPlan generated: ${toolPlan.steps.length} steps`);
+    } catch (err) {
+      logger.warn(`[plan-executor] ToolPlanner failed — continuing without plan: ${(err as Error).message}`);
+    }
+
+    // Mutable local step list — adaptive recovery may insert extra steps
+    const steps = [...plan.steps];
+    // Track which original step IDs already had a recovery step inserted
+    const recoveryInsertedFor = new Set<number>();
+
+    for (let i = 0; i < steps.length; i++) {
       if (signal?.aborted) {
         logger.debug('[plan-executor] Aborted between steps');
         break;
@@ -119,9 +153,9 @@ export class PlanExecutor {
         break;
       }
 
-      const step = plan.steps[i];
-      onStep?.(step, i, plan.steps.length);
-      logger.debug(`[plan-executor] Step ${step.id}/${plan.steps.length}: ${step.description}`);
+      const step = steps[i];
+      onStep?.(step, i, steps.length);
+      logger.debug(`[plan-executor] Step ${step.id}/${steps.length}: ${step.description}`);
 
       // ── Per-step context tracking ───────────────────────────────────────
       const stepStartTime     = Date.now();
@@ -129,12 +163,15 @@ export class PlanExecutor {
       let   stepToolCalls     = 0;
       const stepErrors: string[] = [];
 
+      // Inject tool plan context if available
+      const toolPlanBlock = toolPlan ? formatToolPlan(toolPlan) : '';
       const stepPrompt = [
         `Execute step ${step.id}: ${step.description}`,
         '',
         `Context: This is step ${step.id} of ${plan.steps.length} for task: "${plan.query}"`,
         'Focus only on this step. Use tools as needed.',
         'After writing any file, verify the change looks correct.',
+        ...(toolPlanBlock ? ['', toolPlanBlock] : []),
       ].join('\n');
 
       let stepResponse = '';
@@ -167,13 +204,52 @@ export class PlanExecutor {
             stepToolCalls++;
           },
           signal,
-          { maxRounds: ROUNDS_PER_STEP },
+          {
+            maxRounds: ROUNDS_PER_STEP,
+            skipRetrieval: !!plan.repositoryContext,
+            retrievalContext: plan.repositoryContext ?? '',
+          },
         );
       } catch (err) {
         const msg = (err as Error).message;
         stepErrors.push(msg);
         logger.warn(`[plan-executor] Step ${step.id} error: ${msg}`);
         onStage?.(`WARN Step ${step.id} error: ${msg.slice(0, 80)}`);
+      }
+
+      // ── Adaptive recovery: insert fix step when errors detected ────────
+      if (stepErrors.length > 0 && !recoveryInsertedFor.has(step.id)) {
+        const errorText = stepErrors.join('\n');
+        const analysis  = failureAnalyzer.classify(errorText);
+        if (analysis.type !== 'unknown') {
+          const recoveryStep: PlanStep = {
+            id:          step.id * 1000 + 1,   // synthetic id
+            description: analysis.fixPrompt,
+          };
+          steps.splice(i + 1, 0, recoveryStep);
+          recoveryInsertedFor.add(step.id);
+          recoveryStepsInserted++;
+          logger.debug(`[plan-executor] Inserted recovery step (${analysis.type}) after step ${step.id}`);
+          onStage?.(`INFO Adaptive recovery: ${analysis.summary}`);
+        }
+      }
+
+      // ── ToolPlanner: mark corresponding tool plan steps done ────────────
+      if (toolPlan) {
+        const stepSuccess = stepErrors.length === 0;
+        // Mark first pending tool plan step as done for this execution step
+        const pendingToolStep = toolPlan.steps.find((s) => !s.done);
+        if (pendingToolStep) {
+          this.toolPlanner.markStepDone(toolPlan, pendingToolStep.id, stepSuccess);
+        }
+        this.toolPlanner.updatePlanAfterStep(toolPlan, stepResponse);
+      }
+
+      // ── Step outcome tracking ────────────────────────────────────────────
+      if (stepErrors.length === 0) {
+        successfulSteps++;
+      } else {
+        failedSteps++;
       }
 
       // Record per-step context
@@ -195,15 +271,30 @@ export class PlanExecutor {
       }
     }
 
+    // ── ToolPlanner: log final metrics ────────────────────────────────────
+    if (toolPlan) {
+      const planMetrics = this.toolPlanner.computeMetrics(toolPlan);
+      logger.debug(`[plan-executor] ${ToolPlanner.formatMetrics(planMetrics)}`);
+    }
+
+    logger.debug(
+      `[plan-executor] Complete: ${stepsExecuted} steps, ${successfulSteps} ok, ` +
+      `${failedSteps} failed, ${recoveryStepsInserted} recovery steps`,
+    );
+
     return {
       response: fullResponse.trim(),
       metrics: {
         stepsExecuted,
-        filesModified:  Array.from(this.filesModified),
-        toolsUsed:      Array.from(this.toolsUsed),
-        totalToolCalls: this.totalToolCalls,
-        durationMs:     Date.now() - startTime,
-        stepContexts:   this.stepContexts,
+        filesModified:          Array.from(this.filesModified),
+        toolsUsed:              Array.from(this.toolsUsed),
+        totalToolCalls:         this.totalToolCalls,
+        durationMs:             Date.now() - startTime,
+        stepContexts:           this.stepContexts,
+        recoveryStepsInserted,
+        successfulSteps,
+        failedSteps,
+        ...(taskComplexity ? { taskComplexity } : {}),
       },
       worktreePath,
     };

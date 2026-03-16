@@ -2,6 +2,8 @@ import { ReasoningEngine } from '../ai/reasoning/reasoning-engine.js';
 import type { AIProvider, ChatMessage } from '../ai/types.js';
 import type { RepoIndex } from '../types/index.js';
 import type { ChatContext } from '../ai/reasoning/reasoning-engine.js';
+import { RepositoryExplorer } from './repository-explorer.js';
+import { ToolPlanner, formatToolPlan } from '../planning/tool-planner.js';
 import { logger } from '../utils/logger.js';
 
 // ── Sub-agent specialisations ─────────────────────────────────────────────────
@@ -118,32 +120,47 @@ function inferSubTasks(task: string): SubTask[] {
  *
  * This mirrors the human pattern of: implement → test → document.
  */
+/**
+ * Threshold: run RepositoryExplorer pre-flight when task mentions this many
+ * or more distinct file-like tokens, or when complexity is HIGH.
+ */
+const EXPLORER_FILE_COUNT_THRESHOLD = 8;
+
 export class SupervisorAgent {
-  private engine: ReasoningEngine;
+  private engine:     ReasoningEngine;
+  private explorer:   RepositoryExplorer;
+  private toolPlanner: ToolPlanner;
 
   constructor(
     private readonly index:       RepoIndex | null,
     private readonly provider:    AIProvider,
     private readonly chatContext: ChatContext,
   ) {
-    this.engine = new ReasoningEngine(index, provider);
+    this.engine      = new ReasoningEngine(index, provider);
+    this.explorer    = new RepositoryExplorer(chatContext.rootPath);
+    this.toolPlanner = new ToolPlanner(provider);
   }
 
   /**
    * Delegate a complex task to specialised sub-agents.
    *
-   * @param task     - Free-form task description (complex query).
-   * @param history  - Rolling conversation history (shared with outer session).
-   * @param onChunk  - Streams text from each sub-agent as it runs.
-   * @param onStage  - Progress indicator callback.
-   * @param signal   - Optional AbortSignal.
+   * For complex tasks (high file count or HIGH complexity) a RepositoryExplorer
+   * pre-flight runs before CodingAgent to inject repo structure context.
+   *
+   * @param task       - Free-form task description (complex query).
+   * @param history    - Rolling conversation history (shared with outer session).
+   * @param onChunk    - Streams text from each sub-agent as it runs.
+   * @param onStage    - Progress indicator callback.
+   * @param signal     - Optional AbortSignal.
+   * @param complexity - Optional complexity label ('LOW' | 'MEDIUM' | 'HIGH').
    */
   async delegate(
-    task:     string,
-    history:  ChatMessage[],
-    onChunk?: (chunk: string) => void,
-    onStage?: (message: string) => void,
-    signal?:  AbortSignal,
+    task:        string,
+    history:     ChatMessage[],
+    onChunk?:    (chunk: string) => void,
+    onStage?:    (message: string) => void,
+    signal?:     AbortSignal,
+    complexity?: string,
   ): Promise<DelegationResult> {
     const start       = Date.now();
     const subTasks    = inferSubTasks(task);
@@ -156,14 +173,46 @@ export class SupervisorAgent {
 
     onStage?.(`AGENT supervisor delegating to ${subTasks.length} sub-agent(s)`);
 
+    // ── Pre-flight: RepositoryExplorer for complex tasks ──────────────────
+    const mentionedFileCount = (task.match(/\b\w+\.[a-z]{1,5}\b/g) ?? []).length;
+    const isComplex = complexity === 'HIGH' || mentionedFileCount >= EXPLORER_FILE_COUNT_THRESHOLD;
+    let explorerSummary = '';
+
+    if (isComplex) {
+      onStage?.('AGENT RepositoryExplorer scanning repository');
+      try {
+        const repoCtx    = await this.explorer.explore();
+        explorerSummary  = repoCtx.summary;
+        logger.debug('[supervisor] RepositoryExplorer complete');
+        onStage?.('AGENT RepositoryExplorer complete');
+      } catch (err) {
+        logger.warn(`[supervisor] RepositoryExplorer failed: ${(err as Error).message}`);
+      }
+    }
+
+    // ── Pre-flight: ToolPlanner generates tool sequence ───────────────────
+    let toolPlanBlock = '';
+    try {
+      const toolPlan  = await this.toolPlanner.generateToolPlan(task, explorerSummary);
+      toolPlanBlock   = formatToolPlan(toolPlan);
+    } catch (err) {
+      logger.warn(`[supervisor] ToolPlanner failed: ${(err as Error).message}`);
+    }
+
     for (const subTask of subTasks) {
       if (signal?.aborted) break;
 
       const rolePrompt = ROLE_PROMPTS[subTask.role];
+      const contextBlock = (explorerSummary && subTask.role === 'CodingAgent')
+        ? `\n\n${explorerSummary}`
+        : '';
+      const planBlock = toolPlanBlock ? `\n\n${toolPlanBlock}` : '';
       const prompt = [
         `[${subTask.role}] ${rolePrompt}`,
         '',
         `Task: ${subTask.description}`,
+        ...(contextBlock ? [contextBlock] : []),
+        ...(planBlock    ? [planBlock]    : []),
       ].join('\n');
 
       onStage?.(`AGENT ${subTask.role} starting`);

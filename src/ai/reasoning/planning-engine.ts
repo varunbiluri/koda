@@ -4,6 +4,7 @@ import { analyzeArchitecture, formatArchitectureSummary } from '../../analysis/a
 import type { AIProvider } from '../types.js';
 import type { RepoIndex } from '../../types/index.js';
 import type { CodeChunk } from '../../types/code-chunk.js';
+import { getRepoIntelligenceCache } from '../../cache/repo-intelligence-cache.js';
 import { logger } from '../../utils/logger.js';
 
 // ── Public constants ──────────────────────────────────────────────────────────
@@ -56,13 +57,25 @@ export class PlanningEngine {
     let architectureBlock = '';
     let filePaths: string[] = [];
 
+    // ── Architecture summary: check cache first ───────────────────────────
+    const cache = await getRepoIntelligenceCache(rootPath);
+    const cachedArch = await cache.getArchitectureSummary();
+
     // Run architecture analysis and hybrid retrieval in parallel
     const [archSummary, retrievalHits] = await Promise.all([
-      analyzeArchitecture(rootPath, this.index),
+      cachedArch ? Promise.resolve(null) : analyzeArchitecture(rootPath, this.index),
       this._retrieveContext(query),
     ]);
 
-    architectureBlock = formatArchitectureSummary(archSummary);
+    if (cachedArch) {
+      architectureBlock = cachedArch;
+      logger.debug('[planning-engine] Architecture summary served from cache');
+    } else if (archSummary) {
+      architectureBlock = formatArchitectureSummary(archSummary);
+      // Persist to cache for subsequent calls
+      await cache.setArchitectureSummary(architectureBlock);
+      await cache.save();
+    }
 
     // ── Phase 2: Context Discovery ────────────────────────────────────────────
     if (retrievalHits.length > 0 && this.index) {
