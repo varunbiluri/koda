@@ -13,6 +13,7 @@ import { buildCodeAnalysisPrompt } from '../prompts/code-analysis.js';
 import { logger } from '../../utils/logger.js';
 import { ToolRegistry } from '../../tools/tool-registry.js';
 import { compressHistory } from '../context/conversation-summarizer.js';
+import { contextBudgetManager } from '../context/context-budget-manager.js';
 import { detectDependencies } from '../../analysis/dependency-detector.js';
 import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
 import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
@@ -296,7 +297,7 @@ export class ReasoningEngine {
     onContext?: (files: string[], estimatedTokens: number) => void,
     onToolUsed?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
-    chatOptions?: { maxRounds?: number },
+    chatOptions?: { maxRounds?: number; skipRetrieval?: boolean; retrievalContext?: string },
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
@@ -343,18 +344,13 @@ export class ReasoningEngine {
     let relevantContext = '';
     const idx = this.index;
 
-    // Token safety guard: estimate size before retrieval
-    const TOKEN_LIMIT  = 200_000;
-    let retrievalLimit = 5;
-    const baseSystemSize =
-      buildChatSystemPrompt(context, '', agentsMdContent, detectedDeps, '').length / 4;
-    if (baseSystemSize > TOKEN_LIMIT * 0.5) {
-      retrievalLimit = 2;
-    }
-
-    if (this.hybrid && idx) {
+    if (chatOptions?.skipRetrieval && chatOptions.retrievalContext !== undefined) {
+      // Caller (e.g. PlanExecutor) already performed retrieval — reuse it
+      relevantContext = chatOptions.retrievalContext;
+      logger.debug('[reasoning-engine] Skipping retrieval — using caller-provided context');
+    } else if (this.hybrid && idx) {
       onStage?.('SEARCH repository');
-      const hits = await this.hybrid.search(input, retrievalLimit);
+      const hits = await this.hybrid.search(input, 5);
       if (hits.length > 0) {
         const chunks = hits
           .map((r) => idx.chunks.find((c) => c.id === r.chunkId))
@@ -388,7 +384,12 @@ export class ReasoningEngine {
     const compressedHistory = await compressHistory(history, this.provider, onStage);
 
     // ── Base message thread (system prompt + trimmed history) ─────────────────
-    const trimmedHistory = compressedHistory.slice(-20);
+    const trimmedHistory = compressedHistory.slice(-20).map((msg) => {
+      if (typeof msg.content === 'string' && msg.content.length > MAX_HISTORY_MESSAGE) {
+        return { ...msg, content: msg.content.slice(0, MAX_HISTORY_MESSAGE) + '…[truncated]' };
+      }
+      return msg;
+    });
     const baseMessages: ChatMessage[] = [
       {
         role: 'system',
@@ -412,15 +413,17 @@ export class ReasoningEngine {
 
     if (isComplexTask) {
       try {
+        const planningMessages = contextBudgetManager.enforce([
+          ...baseMessages,
+          {
+            role: 'user' as const,
+            content:
+              'Before starting, outline your step-by-step approach. Number each step. Be brief.',
+          },
+        ]);
+        logger.debug(`[reasoning-engine] Planning prompt: ${planningMessages.length} messages, ~${contextBudgetManager.estimateMessagesTokens(planningMessages)} tokens`);
         const planResponse = await this.provider.sendChatCompletion({
-          messages: [
-            ...baseMessages,
-            {
-              role: 'user',
-              content:
-                'Before starting, outline your step-by-step approach. Number each step. Be brief.',
-            },
-          ],
+          messages: planningMessages as ChatMessage[],
           temperature: 0.2,
           max_tokens: 300,
         });
@@ -466,8 +469,17 @@ export class ReasoningEngine {
 
       onStage?.('INFO thinking');
 
+      // ── Sliding window: keep first message (plan) + newest MAX_LOOP_MESSAGES ─
+      if (loopMessages.length > MAX_LOOP_MESSAGES + 1) {
+        loopMessages = [loopMessages[0], ...loopMessages.slice(1).slice(-MAX_LOOP_MESSAGES)];
+      }
+
+      // ── Budget enforcement: trim oldest messages to stay within token limit ─
+      const budgetedMessages = contextBudgetManager.enforce(loopMessages);
+      logger.debug(`[reasoning-engine] Round ${round}: ${budgetedMessages.length}/${loopMessages.length} messages, ~${contextBudgetManager.estimateMessagesTokens(budgetedMessages)} tokens`);
+
       const response = await this.provider.sendChatCompletion({
-        messages: loopMessages,
+        messages: budgetedMessages as ChatMessage[],
         temperature: 0.3,
         max_tokens: 2000,
         tools,
@@ -616,6 +628,12 @@ export class ReasoningEngine {
 
 /** Tools that are safe to run in parallel (read-only, no side effects). */
 const SAFE_TOOLS = new Set(['read_file', 'search_code', 'list_files', 'fetch_url']);
+
+/** Maximum number of non-plan messages kept in the loopMessages sliding window. */
+const MAX_LOOP_MESSAGES = 25;
+
+/** Maximum characters per history message before truncating with …[truncated]. */
+const MAX_HISTORY_MESSAGE = 1_500;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

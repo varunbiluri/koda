@@ -117,7 +117,7 @@ export class WorkspaceIntelligence {
 
     return [...this.store.patterns]
       .map((p) => ({ p, score: relevance(query, p) }))
-      .filter(({ score }) => score > 0)
+      .filter(({ score }) => score >= 2)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map(({ p }) => p);
