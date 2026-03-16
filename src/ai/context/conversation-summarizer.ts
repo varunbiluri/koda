@@ -1,6 +1,6 @@
 import type { AIProvider, ChatMessage } from '../types.js';
 
-const COMPRESSION_THRESHOLD = 20; // compress when history exceeds this many messages
+const COMPRESSION_THRESHOLD = 12; // compress when history exceeds this many messages
 const MESSAGES_TO_SUMMARIZE = 10; // oldest N messages to collapse into a summary
 
 /**
