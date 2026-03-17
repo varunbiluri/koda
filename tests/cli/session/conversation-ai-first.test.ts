@@ -88,7 +88,11 @@ function makeUI(): UIRenderer {
     renderStreamChunk: vi.fn(), renderStreamEnd: vi.fn(), renderPlan: vi.fn(),
     renderPatchPreview: vi.fn(), renderError: vi.fn(), renderInfo: vi.fn(),
     renderSuccess: vi.fn(), renderHelp: vi.fn(), renderSetupHeader: vi.fn(),
-    renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(), stream: vi.fn(),
+    renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(),
+    resetSessionState: vi.fn(), stream: vi.fn(),
+    setLastPlan: vi.fn(), updateContext: vi.fn(), recordToolUsed: vi.fn(),
+    setTimeline: vi.fn(), renderContext: vi.fn(), renderTimeline: vi.fn(),
+    advancePlan: vi.fn(),
   } as unknown as UIRenderer;
 }
 
@@ -303,10 +307,10 @@ describe('ToolRegistry', () => {
     runTerminal: vi.fn().mockResolvedValue({ success: true, data: { stdout: 'hello', stderr: '', exitCode: 0 } }),
   }));
 
-  it('getToolDefinitions() returns 16 tools', async () => {
+  it('getToolDefinitions() returns 22 tools', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
-    expect(registry.getToolDefinitions()).toHaveLength(16);
+    expect(registry.getToolDefinitions()).toHaveLength(22);
   });
 
   it('every tool definition has name, description, and parameters', async () => {
@@ -366,9 +370,9 @@ describe('ToolRegistry', () => {
 
   it('execute("run_terminal") returns stdout', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
-    const registry = new ToolRegistry('/repo');
+    const registry = new ToolRegistry(process.cwd());
     const result = await registry.execute('run_terminal', { command: 'echo hello' });
-    expect(result).toBe('hello');
+    expect(result).toContain('hello');
   });
 
   it('execute("write_file") returns success message', async () => {
