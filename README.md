@@ -10,6 +10,10 @@ Koda indexes your repository, reasons over code with your AI provider, and execu
 
 ---
 
+![Koda demo](assets/demo.gif)
+
+---
+
 ## Contents
 
 - [Installation](#installation)
