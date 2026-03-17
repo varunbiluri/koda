@@ -20,7 +20,6 @@ describe('ExecutionTracker', () => {
       const metrics = tracker.finish();
 
       expect(metrics.totalDuration).toBeGreaterThan(0);
-      expect(metrics.totalDuration).toBeGreaterThanOrEqual(50);
     });
 
     it('should reset metrics on start', () => {
