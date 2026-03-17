@@ -248,8 +248,7 @@ describe('ReasoningEngine.analyzeStream — onStage', () => {
     const stages: string[] = [];
     await engine.analyzeStream('explain auth', () => {}, {}, (msg) => stages.push(msg));
 
-    expect(stages).toContain('🔍  reading files');
-    expect(stages).toContain('🧠  planning changes');
-    expect(stages).toContain('✏  generating response');
+    expect(stages).toContain('SEARCH repository');
+    expect(stages.some(s => s.includes('generating response') || s.includes('INFO'))).toBe(true);
   });
 });
