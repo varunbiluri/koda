@@ -41,7 +41,11 @@
       "tree-sitter-javascript",
       "tree-sitter-python",
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "string-width": "7",
+      "afinn-165": "1"
+    }
   },
   "dependencies": {
     "chalk": "^5.6.2",
