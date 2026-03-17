@@ -297,7 +297,7 @@ export class ReasoningEngine {
     onContext?: (files: string[], estimatedTokens: number) => void,
     onToolUsed?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
-    chatOptions?: { maxRounds?: number; skipRetrieval?: boolean; retrievalContext?: string },
+    chatOptions?: { maxRounds?: number; skipRetrieval?: boolean; retrievalContext?: string; skipPlanning?: boolean },
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
@@ -411,7 +411,7 @@ export class ReasoningEngine {
 
     let loopMessages: ChatMessage[] = [...baseMessages];
 
-    if (isComplexTask) {
+    if (isComplexTask && !chatOptions?.skipPlanning) {
       try {
         const planningMessages = contextBudgetManager.enforce([
           ...baseMessages,

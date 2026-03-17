@@ -37,6 +37,7 @@ import { failureAnalyzer } from './failure-analyzer.js';
 import { ExecutionStateStore } from '../runtime/execution-state-store.js';
 import { ToolResultIndex } from '../runtime/tool-result-index.js';
 import { contextBudgetManager } from '../ai/context/context-budget-manager.js';
+import { backoffDelayMs, sleep } from './retry-policy.js';
 import { logger } from '../utils/logger.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -84,6 +85,8 @@ export interface SchedulerResult {
   failedNodes: string[];
   /** Total tool calls across all nodes. */
   totalToolCalls: number;
+  /** Total retry attempts across all nodes (0 when every node succeeded first try). */
+  retries: number;
 }
 
 // ── GraphScheduler ────────────────────────────────────────────────────────────
@@ -91,8 +94,14 @@ export interface SchedulerResult {
 export class GraphScheduler {
   private readonly stateStore:      ExecutionStateStore;
   private readonly toolResultIndex: ToolResultIndex;
-  private lastSaveTime = 0;
-  private totalToolCalls = 0;
+  private lastSaveTime    = 0;
+  private totalToolCalls  = 0;
+  private totalRetries    = 0;
+  /**
+   * Per-node backoff delays (ms) to apply before the next execution attempt.
+   * Set in the failure handler when a node transitions to 'retrying'.
+   */
+  private readonly pendingBackoffs = new Map<string, number>();
 
   constructor(
     private readonly provider:    AIProvider,
@@ -140,16 +149,22 @@ export class GraphScheduler {
       const toStart = runnable.slice(0, Math.max(0, freeSlots));
 
       for (const node of toStart) {
-        logger.debug(`[graph-scheduler] ▷ Node start: ${node.id} (${node.type}/${node.agentRole})`);
+        // Consume any pending backoff registered by a previous failure
+        const backoffMs = this.pendingBackoffs.get(node.id) ?? 0;
+        this.pendingBackoffs.delete(node.id);
+
+        logger.info(`[graph-scheduler] NODE_START id=${node.id} type=${node.type} role=${node.agentRole}${backoffMs > 0 ? ` backoff=${backoffMs}ms` : ''}`);
         opts.onNodeStart?.(node);
         graph.markRunning(node.id);
 
-        const nodePromise = this._executeNode(graph, node, opts)
+        // Delay node launch if a backoff was registered (exponential retry backoff)
+        const nodePromise = (backoffMs > 0 ? sleep(backoffMs) : Promise.resolve())
+          .then(() => this._executeNode(graph, node, opts))
           .then((result) => {
             graph.markCompleted(node.id, result);
             running.delete(node.id);
             this.totalToolCalls += result.toolCallCount;
-            logger.debug(`[graph-scheduler] ✓ Node complete: ${node.id} (${result.durationMs}ms, ${result.toolCallCount} tools)`);
+            logger.info(`[graph-scheduler] NODE_COMPLETE id=${node.id} duration=${result.durationMs}ms tools=${result.toolCallCount}`);
             opts.onNodeComplete?.(node, result);
             void this._maybeSave(graph);
           })
@@ -159,11 +174,15 @@ export class GraphScheduler {
             running.delete(node.id);
 
             if (node.state === 'retrying') {
-              logger.debug(`[graph-scheduler] ↻ Node retry: ${node.id} (attempt ${node.retryCount})`);
+              // Register exponential backoff for the next attempt
+              const delay = backoffDelayMs(node.retryCount);
+              this.pendingBackoffs.set(node.id, delay);
+              this.totalRetries++;
+              logger.info(`[graph-scheduler] RETRY id=${node.id} attempt=${node.retryCount} backoff=${delay}ms error="${msg.slice(0, 80)}"`);
               opts.onRetry?.(node, node.retryCount);
             } else {
-              // state = 'failed'
-              logger.warn(`[graph-scheduler] ✗ Node failed: ${node.id} — ${msg.slice(0, 120)}`);
+              // Terminal failure — state = 'failed'
+              logger.warn(`[graph-scheduler] NODE_FAILED id=${node.id} error="${msg.slice(0, 120)}"`);
               opts.onNodeFailed?.(node, msg);
               // Insert recovery node for classifiable failures
               const recoveryId = this._insertRecoveryNode(graph, node, msg);
@@ -197,12 +216,14 @@ export class GraphScheduler {
       durationMs:     Date.now() - start,
       failedNodes:    graph.getAllNodes().filter((n) => n.state === 'failed').map((n) => n.id),
       totalToolCalls: this.totalToolCalls,
+      retries:        this.totalRetries,
     };
 
-    logger.debug(
-      `[graph-scheduler] ■ Graph done: ${stats.completed} completed, ` +
-      `${stats.failed} failed, ${(result.durationMs / 1000).toFixed(1)}s, ` +
-      `${this.totalToolCalls} total tool calls`,
+    logger.info(
+      `[graph-scheduler] GRAPH_DONE id=${graph.graphId} ` +
+      `completed=${stats.completed} failed=${stats.failed} ` +
+      `retries=${this.totalRetries} duration=${(result.durationMs / 1000).toFixed(1)}s ` +
+      `tools=${this.totalToolCalls}`,
     );
 
     return result;
@@ -268,6 +289,9 @@ export class GraphScheduler {
         maxRounds:        node.context.maxRounds ?? DEFAULT_MAX_ROUNDS,
         skipRetrieval:    !!node.context.repoContext,
         retrievalContext: node.context.repoContext ?? '',
+        // Graph nodes are already the output of the planning phase —
+        // suppress the redundant in-chat planning LLM call to save tokens.
+        skipPlanning:     true,
       },
     );
 
