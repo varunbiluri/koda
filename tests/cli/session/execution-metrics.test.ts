@@ -284,7 +284,7 @@ describe('UIRenderer.renderExecutionSummary', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  it('outputs "Done (N tools · Nk tokens · Ns)"', async () => {
+  it('outputs tool count, token count, and duration', async () => {
     const { UIRenderer } = await import('../../../src/cli/session/ui-renderer.js');
     const renderer = new UIRenderer();
     const logs: string[] = [];
@@ -292,7 +292,6 @@ describe('UIRenderer.renderExecutionSummary', () => {
 
     renderer.renderExecutionSummary({ tools: 4, tokens: 3000, duration: 6 });
 
-    expect(logs.some(l => l.includes('Done'))).toBe(true);
     expect(logs.some(l => l.includes('4 tools'))).toBe(true);
     expect(logs.some(l => l.includes('3k tokens'))).toBe(true);
     expect(logs.some(l => l.includes('6s'))).toBe(true);
@@ -332,7 +331,11 @@ describe('ConversationEngine — renderExecutionSummary integration', () => {
       renderStreamChunk: vi.fn(), renderStreamEnd: vi.fn(), renderPlan: vi.fn(),
       renderPatchPreview: vi.fn(), renderError: vi.fn(), renderInfo: vi.fn(),
       renderSuccess: vi.fn(), renderHelp: vi.fn(), renderSetupHeader: vi.fn(),
-      renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(), stream: vi.fn(),
+      renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(),
+      resetSessionState: vi.fn(), stream: vi.fn(),
+      setLastPlan: vi.fn(), updateContext: vi.fn(), recordToolUsed: vi.fn(),
+      setTimeline: vi.fn(), renderContext: vi.fn(), renderTimeline: vi.fn(),
+      advancePlan: vi.fn(),
     } as unknown as import('../../../src/cli/session/ui-renderer.js').UIRenderer;
   }
 
