@@ -5,55 +5,57 @@ Output assets/demo.gif
 
 Set Shell "bash"
 Set FontSize 13
-Set Width 1100
-Set Height 620
+Set Width 1000
+Set Height 580
 Set Theme "Dracula"
 Set Padding 24
-Set TypingSpeed 40ms
+Set TypingSpeed 55ms
 Set CursorBlink false
 
-# ── Start ──────────────────────────────────────────────────────────────────────
+# ── Setup (hidden) ─────────────────────────────────────────────────────────────
+Hide
+Type "cd /Users/varunbilluri/AI && clear"
+Enter
+Sleep 500ms
+Show
 
-Sleep 800ms
-
-# Show the repo
-Type "ls src/"
+# ── Version ────────────────────────────────────────────────────────────────────
+Sleep 500ms
+Type "koda --version"
 Sleep 300ms
 Enter
-Sleep 1.2s
+Sleep 1s
 
-# Index the repository
+# ── Index ──────────────────────────────────────────────────────────────────────
 Type "koda init"
-Sleep 400ms
-Enter
-Sleep 5s
-
-# Ask a question
-Type "koda ask 'how does the authentication middleware work'"
-Sleep 400ms
-Enter
-Sleep 6s
-
-# Start the conversational session
-Type "koda"
-Sleep 400ms
-Enter
-Sleep 2s
-
-# First question in the session
-Type "explain how the query engine works"
-Sleep 400ms
-Enter
-Sleep 5s
-
-# Second — trigger a task
-Type "add a /health endpoint to the API router"
-Sleep 400ms
+Sleep 300ms
 Enter
 Sleep 7s
 
-# Exit
-Type "quit"
-Sleep 400ms
+# ── Status ─────────────────────────────────────────────────────────────────────
+Type "koda status"
+Sleep 300ms
 Enter
-Sleep 1s
+Sleep 1.8s
+
+# ── Interactive session ────────────────────────────────────────────────────────
+Sleep 500ms
+Type "koda"
+Sleep 300ms
+Enter
+Sleep 2s
+
+Type "help"
+Sleep 300ms
+Enter
+Sleep 2.5s
+
+Type "status"
+Sleep 300ms
+Enter
+Sleep 2s
+
+Type "quit"
+Sleep 300ms
+Enter
+Sleep 1.2s
