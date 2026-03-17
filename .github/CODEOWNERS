@@ -1,0 +1,16 @@
+# Global owner — required reviewer for all PRs
+* @varunbiluri
+
+# Core execution engine
+src/execution/ @varunbiluri
+src/planning/  @varunbiluri
+src/runtime/   @varunbiluri
+
+# AI providers and reasoning
+src/ai/        @varunbiluri
+
+# CLI entry point
+src/cli/       @varunbiluri
+
+# GitHub Actions workflows
+.github/       @varunbiluri

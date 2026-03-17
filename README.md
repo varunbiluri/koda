@@ -2,7 +2,7 @@
 
 **An autonomous AI software engineer for your codebase.**
 
-Koda indexes your repository, reasons over code with Azure AI, and executes multi-agent workflows to build features, fix bugs, and refactor code — all from the terminal.
+Koda indexes your repository, reasons over code with your AI provider, and executes multi-agent workflows to build features, fix bugs, and refactor code — all from the terminal.
 
 ---
 
@@ -38,7 +38,7 @@ pnpm build
 pnpm link --global
 ```
 
-**Requirements:** Node.js 18+, pnpm 8+
+**Requirements:** Node.js 18+, pnpm 10+
 
 ---
 
@@ -70,28 +70,39 @@ koda
 | `koda build <task>` | Build a new feature |
 | `koda fix <task>` | Fix a bug |
 | `koda refactor <task>` | Refactor code |
-| `koda login` | Configure Azure AI credentials |
+| `koda review` | Analyze for code quality issues and security risks |
+| `koda test` | Scan for untested functions and generate test scaffolding |
+| `koda login` | Configure AI provider credentials |
+| `koda models` | List available AI models |
+| `koda use <model>` | Switch to a different AI model |
+| `koda config` | Show or update Koda AI configuration |
 | `koda status` | Show index stats |
+| `koda index-status` | Show indexing status and shard information |
 | `koda symbols <query>` | Search the symbol index |
 | `koda plan <task>` | Generate an execution plan |
+| `koda graph <task>` | Generate execution dependency graph for a task |
+| `koda skills` | Manage and view available skills |
+| `koda workers` | Show distributed worker status |
 | `koda watch` | Watch for changes and run background agents |
 | `koda improve` | Run all agents and show patch preview |
 | `koda start-lsp` | Start LSP server (for editor integrations) |
 | `koda doctor` | Run health checks |
 | `koda history` | View past executions |
+| `koda replay` | Replay a past execution |
+| `koda repl` | Start interactive REPL mode |
 
 ---
 
 ## Configuration
 
-Run `koda login` to set up Azure AI credentials interactively. Koda will:
+Run `koda login` to set up AI provider credentials interactively. Koda will:
 
-1. Prompt for your Azure endpoint
+1. Prompt for your provider endpoint
 2. Prompt for your API key (hidden input)
 3. Fetch your available deployments
 4. Let you select a model with arrow keys
 
-Config is stored in `~/.koda/config.json`.
+Config is stored in `.koda/config.json` at the root of your repository.
 
 ---
 
@@ -99,8 +110,8 @@ Config is stored in `~/.koda/config.json`.
 
 ```
 src/
-├── ai/               # Azure AI provider, reasoning engine, config
-├── agents/           # 50+ specialized agents (planning, coding, testing, debugging)
+├── ai/               # AI providers, reasoning engine, context management
+├── agents/           # Agent implementations (supervisor, workers, review, test)
 ├── background/       # Background agents triggered on file save / git commit
 ├── cli/              # Commands, session manager, intent detection
 ├── distributed/      # Worker pool and task dispatcher
@@ -186,4 +197,4 @@ pnpm test tests/extensions/
 
 ## License
 
-MIT
+ISC

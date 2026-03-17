@@ -87,7 +87,7 @@ See the sections below for code contribution guidelines.
 ### Prerequisites
 
 - **Node.js** 18.0.0 or higher
-- **pnpm** 8.0.0 or higher
+- **pnpm** 10.0.0 or higher
 - **Git** for version control
 
 ### Initial Setup
