@@ -68,7 +68,8 @@ function parseStage(raw: string): { label: string; detail: string } {
   const mapped = STAGE_MAP[raw];
   if (mapped) return parseStage(mapped);
   // Fallback: strip emoji prefix and treat as INFO
-  const stripped = raw.replace(/^[\p{Emoji}\s]+/u, '').trim();
+  // Strip leading non-ASCII/symbol prefix (emoji) without u-flag for Node 18 compat
+  const stripped = raw.replace(/^[^a-zA-Z0-9([\-]+/, '').trim();
   return { label: L.INFO, detail: stripped || raw };
 }
 

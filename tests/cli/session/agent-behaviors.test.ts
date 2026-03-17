@@ -311,76 +311,76 @@ describe('ReasoningEngine.chat() — planning step', () => {
 // ── 4. Tool stage messages from ToolRegistry ──────────────────────────────────
 
 describe('ToolRegistry.execute() — detailed stage messages', () => {
-  it('read_file emits "📖  reading <path>"', async () => {
+  it('read_file emits "READ <path>"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('read_file', { path: 'src/auth.ts' }, (s) => stages.push(s));
-    expect(stages).toContain('📖  reading src/auth.ts');
+    expect(stages).toContain('READ src/auth.ts');
   });
 
-  it('search_code emits "🔍  searching for \\"<query>\\""', async () => {
+  it('search_code emits "SEARCH \\"<query>\\""', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('search_code', { query: 'loginUser' }, (s) => stages.push(s));
-    expect(stages).toContain('🔍  searching for "loginUser"');
+    expect(stages).toContain('SEARCH "loginUser"');
   });
 
-  it('list_files emits "📁  listing <dir>"', async () => {
+  it('list_files emits "READ <dir>/"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('list_files', { path: 'src' }, (s) => stages.push(s));
-    expect(stages).toContain('📁  listing src');
+    expect(stages).toContain('READ src/');
   });
 
-  it('git_branch emits "🔧  git branch"', async () => {
+  it('git_branch emits "GIT branch"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('git_branch', {}, (s) => stages.push(s));
-    expect(stages).toContain('🔧  git branch');
+    expect(stages).toContain('GIT branch');
   });
 
-  it('git_status emits "🔧  git status"', async () => {
+  it('git_status emits "GIT status"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('git_status', {}, (s) => stages.push(s));
-    expect(stages).toContain('🔧  git status');
+    expect(stages).toContain('GIT status');
   });
 
-  it('git_diff emits "🔧  git diff"', async () => {
+  it('git_diff emits "GIT diff"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('git_diff', {}, (s) => stages.push(s));
-    expect(stages).toContain('🔧  git diff');
+    expect(stages).toContain('GIT diff');
   });
 
-  it('git_log emits "🔧  git log"', async () => {
+  it('git_log emits "GIT log"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('git_log', {}, (s) => stages.push(s));
-    expect(stages).toContain('🔧  git log');
+    expect(stages).toContain('GIT log');
   });
 
-  it('run_terminal emits "⚙  running: <command>"', async () => {
+  it('run_terminal emits "RUN <command>"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('run_terminal', { command: 'ls -la' }, (s) => stages.push(s));
-    expect(stages).toContain('⚙  running: ls -la');
+    expect(stages).toContain('RUN ls -la');
   });
 
-  it('write_file emits "✏  writing <path>"', async () => {
+  it('write_file emits "WRITE <path> (N lines)"', async () => {
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
     await registry.execute('write_file', { path: 'varun.md', content: '# Hi' }, (s) => stages.push(s));
-    expect(stages).toContain('✏  writing varun.md');
+    expect(stages).toContain('WRITE varun.md (1 lines)');
   });
 
   it('no onStage callback does not throw', async () => {
@@ -428,7 +428,7 @@ describe('ReasoningEngine.chat() — automatic code retrieval', () => {
     const stages: string[] = [];
     await engine.chat('explain execution engine', BASE_CTX, [], vi.fn(), (s) => stages.push(s));
 
-    expect(stages).toContain('🔍  searching repository');
+    expect(stages).toContain('SEARCH repository');
   });
 
   it('skips retrieval stage when no index is present', async () => {
@@ -439,7 +439,7 @@ describe('ReasoningEngine.chat() — automatic code retrieval', () => {
     const stages: string[] = [];
     await engine.chat('who are you', BASE_CTX, [], vi.fn(), (s) => stages.push(s));
 
-    expect(stages).not.toContain('🔍  searching repository');
+    expect(stages).not.toContain('SEARCH repository');
   });
 });
 
@@ -454,7 +454,11 @@ describe('ConversationEngine — history accumulation', () => {
       renderStreamChunk: vi.fn(), renderStreamEnd: vi.fn(), renderPlan: vi.fn(),
       renderPatchPreview: vi.fn(), renderError: vi.fn(), renderInfo: vi.fn(),
       renderSuccess: vi.fn(), renderHelp: vi.fn(), renderSetupHeader: vi.fn(),
-      renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(), stream: vi.fn(),
+      renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(),
+      resetSessionState: vi.fn(), stream: vi.fn(),
+      setLastPlan: vi.fn(), updateContext: vi.fn(), recordToolUsed: vi.fn(),
+      setTimeline: vi.fn(), renderContext: vi.fn(), renderTimeline: vi.fn(),
+      advancePlan: vi.fn(),
     } as unknown as import('../../../src/cli/session/ui-renderer.js').UIRenderer;
   }
 

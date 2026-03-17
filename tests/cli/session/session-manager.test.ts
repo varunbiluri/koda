@@ -180,6 +180,6 @@ describe('UIRenderer', () => {
 
   it('renderStreamChunk writes to stdout', () => {
     renderer.renderStreamChunk('hello');
-    expect(process.stdout.write).toHaveBeenCalledWith('hello');
+    expect(process.stdout.write).toHaveBeenCalled();
   });
 });

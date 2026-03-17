@@ -82,6 +82,10 @@ function makeUI(): UIRenderer {
     renderPatchPreview: vi.fn(), renderError: vi.fn(), renderInfo: vi.fn(),
     renderSuccess: vi.fn(), renderHelp: vi.fn(), renderSetupHeader: vi.fn(),
     renderDivider: vi.fn(), renderMeta: vi.fn(), renderExecutionSummary: vi.fn(),
+    resetSessionState: vi.fn(), stream: vi.fn(),
+    setLastPlan: vi.fn(), updateContext: vi.fn(), recordToolUsed: vi.fn(),
+    setTimeline: vi.fn(), renderContext: vi.fn(), renderTimeline: vi.fn(),
+    advancePlan: vi.fn(),
   } as unknown as UIRenderer;
 }
 
