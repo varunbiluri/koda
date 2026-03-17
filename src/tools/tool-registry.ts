@@ -8,6 +8,8 @@ import { editFile } from './edit-file.js';
 import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
 import { TOOL_OUTPUT_LIMITS, truncateOutput } from '../runtime/tool-output-limits.js';
+import { permissionGate, PermissionLevel } from '../runtime/permission-gate.js';
+import { logger } from '../utils/logger.js';
 import * as path from 'node:path';
 
 
@@ -501,6 +503,22 @@ export class ToolRegistry {
       onTiming?.(name, Date.now() - t0);
       return result;
     };
+
+    // ── Permission gate: every tool call must pass through the gate ───────────
+    const decision = permissionGate.check(name);
+    logger.info(`[tool-registry] PERMISSION tool=${name} decision=${decision}`);
+
+    if (decision === PermissionLevel.DENY) {
+      return done(`Error: Tool "${name}" is blocked by security policy (DENY)`);
+    }
+
+    if (decision === PermissionLevel.ASK) {
+      const approved = await permissionGate.requestApproval(name);
+      if (!approved) {
+        return done(`Error: Tool "${name}" was not approved — operation cancelled`);
+      }
+    }
+    // ── End permission gate ───────────────────────────────────────────────────
 
     switch (name) {
       case 'read_file': {
