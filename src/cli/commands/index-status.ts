@@ -45,7 +45,8 @@ export function createIndexStatusCommand(): Command {
         console.log(chalk.green('✓ Done\n'));
       } catch (error) {
         console.error(chalk.red(`\n✗ Error: ${(error as Error).message}\n`));
-        process.exit(1);
+        // Non-fatal: render error and return control to caller.
+        return;
       }
     });
 

@@ -1,27 +1,18 @@
 /**
- * Tool output size limits (in characters).
+ * Tool output size limits for injection into LLM context.
  *
- * Applied by ToolRegistry before returning results to the AI to prevent
- * individual tool calls from contributing excessive tokens to the prompt.
+ * In the final architecture, tools themselves are unbounded — they can
+ * stream and store arbitrarily large outputs via ToolResultIndex. The
+ * LLM sees only compact references, not raw data, so these limits are
+ * expressed as Infinity to signal "no per-call truncation at the tool
+ * boundary".
+ *
+ * Context is bounded later via trimContext(), not here.
  */
-
-export const TOOL_OUTPUT_LIMITS = {
-  READ_FILE:      3_000,
-  RUN_TERMINAL:   4_000,
-  GIT_DIFF:       6_000,
-  GREP_CODE:      4_000,
-  FETCH_URL:      6_000,
-  LIST_DIRECTORY: 2_000,
+export const TOOL_LIMITS = {
+  READ_FILE:   Infinity,
+  RUN_TERMINAL: Infinity,
+  GIT_DIFF:    Infinity,
+  GREP_CODE:   Infinity,
+  FETCH_URL:   Infinity,
 } as const;
-
-/**
- * Truncate a tool output string to at most `limit` characters.
- * Appends a hint suffix so the AI understands why the output was cut.
- */
-export function truncateOutput(output: string, limit: number, hint = ''): string {
-  if (output.length <= limit) return output;
-  const suffix = hint
-    ? `\n\n[output truncated — ${hint}]`
-    : '\n\n[output truncated]';
-  return output.slice(0, limit) + suffix;
-}

@@ -24,7 +24,7 @@ export function createPlanCommand(): Command {
 
         if (!result.success) {
           console.error(chalk.red(`\n✗ Planning failed: ${result.error}\n`));
-          process.exit(1);
+          return;
         }
 
         const decision = result.result as any;
@@ -71,7 +71,7 @@ export function createPlanCommand(): Command {
         console.log(chalk.green('✓ Plan generated successfully\n'));
       } catch (error) {
         console.error(chalk.red(`\n✗ Error: ${(error as Error).message}\n`));
-        process.exit(1);
+        return;
       }
     });
 
