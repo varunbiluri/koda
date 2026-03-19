@@ -7,7 +7,7 @@ import { replaceText, insertAfterPattern } from './diff-tools.js';
 import { editFile } from './edit-file.js';
 import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
-import { TOOL_OUTPUT_LIMITS, truncateOutput } from '../runtime/tool-output-limits.js';
+import { TOOL_LIMITS } from '../runtime/tool-output-limits.js';
 import { permissionGate, PermissionLevel } from '../runtime/permission-gate.js';
 import { logger } from '../utils/logger.js';
 import * as path from 'node:path';
@@ -527,9 +527,9 @@ export class ToolRegistry {
         const result = await readFile(filePath, this.rootPath);
         if (!result.success) return done(`Error: ${result.error}`);
         const content = result.data ?? '';
-        return done(
-          truncateOutput(content, TOOL_OUTPUT_LIMITS.READ_FILE, 'use grep_code for targeted search'),
-        );
+        // Tools are unbounded; full output is available to ToolResultIndex.
+        // LLM sees only compact references built elsewhere.
+        return done(content);
       }
 
       case 'search_code': {
@@ -570,7 +570,7 @@ export class ToolRegistry {
         onStage?.('GIT diff');
         const result = await gitDiff(this.rootPath);
         if (!result.success) return done(`Error: ${result.error}`);
-        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.GIT_DIFF, 'use grep_code or read_file for specific sections'));
+        return done(result.data ?? '');
       }
 
       case 'git_log': {
@@ -588,7 +588,7 @@ export class ToolRegistry {
           const detail = result.stderr?.trim() || result.stdout?.trim() || 'non-zero exit';
           return done(`Error (exit ${result.exitCode}): ${detail}`);
         }
-        return done(truncateOutput(result.stdout ?? '', TOOL_OUTPUT_LIMITS.RUN_TERMINAL, 'check exit code or redirect output'));
+        return done(result.stdout ?? '');
       }
 
       case 'write_file': {
@@ -682,7 +682,7 @@ export class ToolRegistry {
         onStage?.(`FETCH ${display}`);
         const result = await fetchUrl(url);
         if (!result.success) return done(`Error: ${result.error}`);
-        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.FETCH_URL, 'fetch a more specific URL or section'));
+        return done(result.data ?? '');
       }
 
       case 'koda_commit': {
@@ -750,7 +750,7 @@ export class ToolRegistry {
           const matches = await this.explorer.grepCode(query, fileGlob);
           if (matches.length === 0) return done('No matches found.');
           const raw = matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n');
-          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.GREP_CODE, 'narrow the query or use file_glob'));
+          return done(raw);
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }
@@ -769,7 +769,7 @@ export class ToolRegistry {
               return `${e.name}${size}`;
             })
             .join('\n');
-          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.LIST_DIRECTORY, 'use search_files for deeper exploration'));
+          return done(raw);
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }

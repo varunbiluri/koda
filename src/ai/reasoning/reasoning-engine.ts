@@ -12,11 +12,10 @@ import { getSystemPrompt } from '../prompts/system-prompt.js';
 import { buildCodeAnalysisPrompt } from '../prompts/code-analysis.js';
 import { logger } from '../../utils/logger.js';
 import { ToolRegistry } from '../../tools/tool-registry.js';
-import { compressHistory } from '../context/conversation-summarizer.js';
-import { contextBudgetManager } from '../context/context-budget-manager.js';
 import { detectDependencies } from '../../analysis/dependency-detector.js';
 import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
-import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
+import { trimContext } from '../context/context-trimmer.js';
+import { toolResultIndex } from '../../runtime/tool-result-index.js';
 import { createProvider } from '../providers/provider-factory.js';
 import { loadConfig } from '../config-store.js';
 
@@ -290,7 +289,7 @@ export class ReasoningEngine {
   async chat(
     input: string,
     context: ChatContext,
-    history: ChatMessage[],
+    _history: ChatMessage[], // legacy parameter — intentionally ignored for stateless calls
     onChunk: (chunk: string) => void,
     onStage?: (message: string) => void,
     onPlan?: (steps: string[]) => void,
@@ -380,17 +379,8 @@ export class ReasoningEngine {
     // ── Workspace intelligence: inject learned patterns ───────────────────────
     const workspaceContext = this.workspace?.formatForPrompt(input, 3) ?? '';
 
-    // ── Context compression: summarize long histories ─────────────────────────
-    const compressedHistory = await compressHistory(history, this.provider, onStage);
-
-    // ── Base message thread (system prompt + trimmed history) ─────────────────
-    const trimmedHistory = compressedHistory.slice(-20).map((msg) => {
-      if (typeof msg.content === 'string' && msg.content.length > MAX_HISTORY_MESSAGE) {
-        return { ...msg, content: msg.content.slice(0, MAX_HISTORY_MESSAGE) + '…[truncated]' };
-      }
-      return msg;
-    });
-    const baseMessages: ChatMessage[] = [
+    // ── Base message thread (stateless: no accumulated history) ───────────────
+    const systemMessage: ChatMessage = [
       {
         role: 'system',
         content: buildChatSystemPrompt(
@@ -401,7 +391,6 @@ export class ReasoningEngine {
           workspaceContext,
         ),
       },
-      ...trimmedHistory,
     ];
 
     // ── Step 2: Planning (Problem 3) ──────────────────────────────────────────
@@ -409,12 +398,15 @@ export class ReasoningEngine {
       /\b(create|build|implement|analyze|write|generate|fix|refactor|add|update|make|design|document)\b/i.test(input) &&
       input.trim().split(/\s+/).length >= 3;
 
-    let loopMessages: ChatMessage[] = [...baseMessages];
+    let loopMessages: ChatMessage[] = [
+      systemMessage,
+      { role: 'user', content: input },
+    ];
 
     if (isComplexTask && !chatOptions?.skipPlanning) {
       try {
-        const planningMessages = contextBudgetManager.enforce([
-          ...baseMessages,
+        const planningMessages = trimContext([
+          systemMessage,
           {
             role: 'user' as const,
             content:
@@ -437,7 +429,11 @@ export class ReasoningEngine {
         }
         if (planText) {
           // Include the plan as context for the tool execution loop
-          loopMessages = [...baseMessages, { role: 'assistant', content: planText }];
+          loopMessages = [
+            systemMessage,
+            { role: 'assistant', content: planText },
+            { role: 'user', content: input },
+          ];
         }
       } catch {
         // Planning failed — proceed without plan
@@ -460,23 +456,18 @@ export class ReasoningEngine {
         return { tools: toolCount, tokens: totalTokens, duration };
       }
 
-      // ── Budget guard: stop if agent has exceeded its call/token budget ─────
-      if (!agentBudgetManager.canMakeCall('reasoning-engine', 0)) {
-        onChunk('Budget limit reached — unable to make additional AI calls for this session.');
-        const duration = Math.floor((Date.now() - startTime) / 1000);
-        return { tools: toolCount, tokens: totalTokens, duration };
-      }
-
       onStage?.('INFO thinking');
 
-      // ── Sliding window: keep first message (plan) + newest MAX_LOOP_MESSAGES ─
+      // ── Sliding window: keep system + newest MAX_LOOP_MESSAGES ──────────────
       if (loopMessages.length > MAX_LOOP_MESSAGES + 1) {
         loopMessages = [loopMessages[0], ...loopMessages.slice(1).slice(-MAX_LOOP_MESSAGES)];
       }
 
-      // ── Budget enforcement: trim oldest messages to stay within token limit ─
-      const budgetedMessages = contextBudgetManager.enforce(loopMessages);
-      logger.debug(`[reasoning-engine] Round ${round}: ${budgetedMessages.length}/${loopMessages.length} messages, ~${contextBudgetManager.estimateMessagesTokens(budgetedMessages)} tokens`);
+      // ── Context trimming: soft limit via trimContext() ──────────────────────
+      const budgetedMessages = trimContext(loopMessages);
+      logger.debug(
+        `[reasoning-engine] round=${round} messages=${budgetedMessages.length}/${loopMessages.length}`,
+      );
 
       const response = await this.provider.sendChatCompletion({
         messages: budgetedMessages as ChatMessage[],
@@ -528,16 +519,6 @@ export class ReasoningEngine {
           const toolName = toolCall.function.name;
           toolUsage[toolName] = (toolUsage[toolName] ?? 0) + 1;
 
-          // Block at 3rd call to the same tool to prevent runaway loops
-          if (toolUsage[toolName] >= 3) {
-            logger.warn(`Tool loop protection: ${toolName} called ${toolUsage[toolName]} times (blocked at 3rd call)`);
-            return {
-              role: 'tool',
-              content: `Tool ${toolName} stopped — called too many times. Summarise what you have so far.`,
-              tool_call_id: toolCall.id,
-            };
-          }
-
           let args: Record<string, unknown> = {};
           try {
             args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
@@ -545,7 +526,7 @@ export class ReasoningEngine {
             // empty args — execute() handles gracefully
           }
 
-          logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments})`);
+          logger.debug(`Tool call: ${toolName}(${toolCall.function.arguments}) [call #${toolUsage[toolName]}]`);
 
           // Wrap onStage to capture written file paths for workspace memory
           const wrappedOnStage = (msg: string): void => {
@@ -574,7 +555,29 @@ export class ReasoningEngine {
             };
           }
 
-          return { role: 'tool', content: result, tool_call_id: toolCall.id };
+          // Guide rather than block: inject a hint when the same tool is called
+          // repeatedly without progress. Execution always continues.
+          const callCount = toolUsage[toolName];
+          if (callCount >= 5) {
+            logger.warn(`[reasoning-engine] Tool repetition: ${toolName} called ${callCount} times — injecting guidance hint`);
+          }
+          const repetitionHint = callCount >= 5
+            ? ` [Hint: ${toolName} has been called ${callCount} times. If you are repeating the same operation without making progress, try a different approach.]`
+            : '';
+
+          // Store full tool output in ToolResultIndex and expose only a reference to the LLM.
+          const ref = toolResultIndex.store(
+            'reasoning-engine',
+            toolName,
+            Object.fromEntries(Object.entries(args).map(([k, v]) => [k, String(v)])),
+            result,
+          );
+
+          return {
+            role:        'tool',
+            content:     `Tool result available: ${ref.id} (${toolName}, ${ref.description})${repetitionHint}`,
+            tool_call_id: toolCall.id,
+          };
         };
 
         const indexedCalls = message.tool_calls.map((tc, idx) => ({ tc, idx }));
