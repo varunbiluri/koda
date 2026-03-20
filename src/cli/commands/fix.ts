@@ -244,6 +244,16 @@ export const fixCommand = new Command('fix')
         if (oneliner) console.log(chalk.gray(`\n  ${oneliner}`));
       }
 
+      if (succeeded) {
+        console.log(
+          chalk.gray('\n  🚀 Koda fixed this automatically.') +
+          '\n' +
+          chalk.gray('     If this saved you time → ') +
+          chalk.blue('github.com/varunbiluri/koda') +
+          '\n',
+        );
+      }
+
     } catch (err) {
       handleCliError(err);
       if (metrics) {
