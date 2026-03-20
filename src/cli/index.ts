@@ -29,6 +29,7 @@ import { createTestGenCommand } from './commands/test-gen.js';
 import { createAutoCommand } from './commands/auto.js';
 import { createAddCommand } from './commands/add.js';
 import { createFeedbackCommand } from './commands/feedback.js';
+import { createUpdateCommand } from './commands/update.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
@@ -82,8 +83,9 @@ export function createProgram(): Command {
   program.addCommand(createReviewCommand());
   program.addCommand(createTestGenCommand());
 
-  // Launch — feedback loop
+  // Launch — feedback loop + update
   program.addCommand(createFeedbackCommand());
+  program.addCommand(createUpdateCommand());
 
   // Interactive mode
   program.addCommand(replCommand);

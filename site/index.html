@@ -99,6 +99,22 @@
     }
     .btn-ghost:hover { border-color: var(--muted); }
 
+    /* ── Free badge ── */
+    .free-badge {
+      display: inline-block;
+      background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.35);
+      color: var(--green); border-radius: 100px;
+      padding: 6px 18px; font-size: 0.82rem; font-weight: 600;
+      margin-bottom: 32px; letter-spacing: 0.02em;
+    }
+
+    /* ── Install block ── */
+    .install-block { max-width: 500px; margin: 28px auto 0; }
+    .install-note {
+      font-size: 0.78rem; color: var(--muted);
+      text-align: center; margin-top: 10px;
+    }
+
     /* ── Install strip ── */
     .install-strip {
       background: var(--surface); border: 1px solid var(--border);
@@ -285,20 +301,33 @@
   <div class="hero-badge">
     <span>⚡</span> Autonomous AI Engineer — not a copilot
   </div>
-  <h1>Give Koda a task.<br /><em>Come back to a working diff.</em></h1>
+
+  <h1>Fix bugs. Add features.<br /><em>Ship code — for free.</em></h1>
   <p>
-    Koda fixes bugs, adds features, and refactors code end-to-end —
-    then verifies the result with your tests. It self-corrects when it fails.
-    No hand-holding required.
+    Your autonomous AI engineer — completely free, no limits.
+    Koda executes the full loop: find root cause → write patch → run tests →
+    self-correct until done. You review the diff and commit.
   </p>
+  <div class="free-badge">100% free &nbsp;·&nbsp; No limits &nbsp;·&nbsp; No lock-in &nbsp;·&nbsp; Open source</div>
   <div class="hero-actions">
     <a class="btn-primary" href="#quickstart">Install free →</a>
     <a class="btn-ghost" href="https://github.com/varunbiluri/koda">View on GitHub</a>
   </div>
-  <div class="install-strip">
-    <span class="prompt">$</span>
-    <code>npm install -g @varunbiluri/koda</code>
-    <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g @varunbilluri/koda').then(()=>this.textContent='✓').catch(()=>{})">Copy</button>
+  <div class="install-block">
+    <div class="install-strip">
+      <span class="prompt">$</span>
+      <code>npm install -g @varunbilluri/koda</code>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g @varunbilluri/koda').then(()=>this.textContent='✓').catch(()=>{})">Copy</button>
+    </div>
+    <div class="install-strip" style="margin-top:6px">
+      <span class="prompt">$</span>
+      <code>koda init &amp;&amp; koda login</code>
+    </div>
+    <div class="install-strip" style="margin-top:6px">
+      <span class="prompt">$</span>
+      <code>koda fix "your bug"</code>
+    </div>
+    <p class="install-note">Works in under 5 minutes on your repo. No credit card. No account.</p>
   </div>
 </div>
 
@@ -318,16 +347,20 @@
 <!-- ── Proof bar ─────────────────────────────────────────────────────────── -->
 <div class="proof-bar">
   <div class="proof-item">
-    <div class="proof-number">1 219</div>
+    <div class="proof-number">1,229+</div>
     <div class="proof-label">tests passing</div>
   </div>
   <div class="proof-item">
-    <div class="proof-number">3</div>
-    <div class="proof-label">commands to get started</div>
+    <div class="proof-number">1,000s</div>
+    <div class="proof-label">of lines fixed automatically</div>
+  </div>
+  <div class="proof-item">
+    <div class="proof-number">100% free</div>
+    <div class="proof-label">no limits, no lock-in</div>
   </div>
   <div class="proof-item">
     <div class="proof-number">&lt; 5 min</div>
-    <div class="proof-label">to complete first task</div>
+    <div class="proof-label">from install to first fix</div>
   </div>
   <div class="proof-item">
     <div class="proof-number">0</div>
@@ -561,12 +594,15 @@
 
 <!-- ── CTA ───────────────────────────────────────────────────────────────── -->
 <div class="cta-section">
-  <h2>Ready to ship faster?</h2>
-  <p>Koda is free and open source. Give it your hardest bug.</p>
-  <div class="hero-actions" style="margin-bottom:0">
+  <h2>Try it on your repo in under 5 minutes.</h2>
+  <p>Free. Open source. No credit card. Just install and run <code style="font-family:monospace;font-size:0.95rem;color:var(--blue)">koda fix</code> on a real bug.</p>
+  <div class="hero-actions" style="margin-bottom:16px">
     <a class="btn-primary" href="https://github.com/varunbiluri/koda">Get Koda on GitHub →</a>
-    <a class="btn-ghost" href="https://github.com/varunbiluri/koda/issues">Report an issue</a>
+    <a class="btn-ghost"    href="#quickstart">See the quickstart</a>
   </div>
+  <p style="font-size:0.82rem;color:var(--muted)">
+    Something went wrong? Run <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">koda feedback --broke "what happened"</code> — I read every report.
+  </p>
 </div>
 
 <!-- ── Footer ────────────────────────────────────────────────────────────── -->
@@ -578,5 +614,17 @@
   <a href="https://github.com/varunbiluri/koda/blob/main/LICENSE">ISC License</a>
 </footer>
 
+<script>
+  // Copy-to-clipboard for install commands
+  document.querySelectorAll('.copy-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var code = btn.previousElementSibling && btn.previousElementSibling.textContent;
+      if (code) navigator.clipboard.writeText(code.trim()).then(function() {
+        btn.textContent = '✓ Copied';
+        setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+      }).catch(function() {});
+    });
+  });
+</script>
 </body>
 </html>
