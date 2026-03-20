@@ -307,10 +307,11 @@ describe('ToolRegistry', () => {
     runTerminal: vi.fn().mockResolvedValue({ success: true, data: { stdout: 'hello', stderr: '', exitCode: 0 } }),
   }));
 
-  it('getToolDefinitions() returns 22 tools', async () => {
+  it('getToolDefinitions() returns 20 tools', async () => {
+    // replace_text and insert_after_pattern removed from LLM schema (deprecated)
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
-    expect(registry.getToolDefinitions()).toHaveLength(22);
+    expect(registry.getToolDefinitions()).toHaveLength(20);
   });
 
   it('every tool definition has name, description, and parameters', async () => {
@@ -376,6 +377,11 @@ describe('ToolRegistry', () => {
   });
 
   it('execute("write_file") returns success message', async () => {
+    // Grant session trust so write operations are not blocked in the non-TTY test environment.
+    // In production, users pass --yes or call grantSessionTrust() explicitly.
+    const { permissionGate } = await import('../../../src/runtime/permission-gate.js');
+    permissionGate.grantSessionTrust();
+
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const result = await registry.execute('write_file', { path: 'out.txt', content: 'hello' });

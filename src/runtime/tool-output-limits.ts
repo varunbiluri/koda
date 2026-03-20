@@ -1,27 +1,29 @@
 /**
- * Tool output size limits (in characters).
+ * Tool output size limits for injection into LLM context.
  *
- * Applied by ToolRegistry before returning results to the AI to prevent
- * individual tool calls from contributing excessive tokens to the prompt.
+ * Tools themselves are unbounded — they can produce arbitrarily large outputs
+ * which are stored in ToolResultIndex.  What the LLM actually receives is
+ * determined by the HYBRID STRATEGY in ReasoningEngine.chat():
+ *
+ *   output < INLINE_THRESHOLD (5 000 chars)
+ *     → injected directly into the message history (fast path, no overhead)
+ *
+ *   output ≥ INLINE_THRESHOLD
+ *     → stored as a ToolResultIndex reference; LLM receives a compact header +
+ *       500-char preview.  Use grep_code / search_code to retrieve sections.
+ *
+ * TOOL_LIMITS entries are kept at Infinity to signal "no per-call truncation
+ * at the tool boundary".  The threshold enforcement happens in the reasoning
+ * engine, not here.
  */
 
-export const TOOL_OUTPUT_LIMITS = {
-  READ_FILE:      3_000,
-  RUN_TERMINAL:   4_000,
-  GIT_DIFF:       6_000,
-  GREP_CODE:      4_000,
-  FETCH_URL:      6_000,
-  LIST_DIRECTORY: 2_000,
+/** Characters below which a tool result is injected inline into the LLM prompt. */
+export const INLINE_THRESHOLD = 5_000;
+
+export const TOOL_LIMITS = {
+  READ_FILE:    Infinity,
+  RUN_TERMINAL: Infinity,
+  GIT_DIFF:     Infinity,
+  GREP_CODE:    Infinity,
+  FETCH_URL:    Infinity,
 } as const;
-
-/**
- * Truncate a tool output string to at most `limit` characters.
- * Appends a hint suffix so the AI understands why the output was cut.
- */
-export function truncateOutput(output: string, limit: number, hint = ''): string {
-  if (output.length <= limit) return output;
-  const suffix = hint
-    ? `\n\n[output truncated — ${hint}]`
-    : '\n\n[output truncated]';
-  return output.slice(0, limit) + suffix;
-}

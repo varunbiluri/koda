@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { KodaError, ErrorCode } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
 
 export function formatError(err: unknown): string {
   if (err instanceof KodaError) {
@@ -20,7 +21,8 @@ export function formatError(err: unknown): string {
   return chalk.red(`Unknown error: ${String(err)}`);
 }
 
-export function handleCliError(err: unknown): never {
-  console.error(formatError(err));
-  process.exit(1);
+export function handleCliError(err: unknown): void {
+  const formatted = formatError(err);
+  logger.error(formatted);
+  console.error(formatted);
 }

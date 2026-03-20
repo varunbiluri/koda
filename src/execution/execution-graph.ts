@@ -159,7 +159,7 @@ export class ExecutionGraph {
 
   // ── Mutation ───────────────────────────────────────────────────────────────
 
-  /** Add a node. Throws if the id is already registered. */
+  /** Add a node. Throws if the id is already registered or if adding the node creates a cycle. */
   addNode(node: ExecutionNode): void {
     if (this.nodes.has(node.id)) {
       throw new Error(`[execution-graph] Duplicate node id: "${node.id}"`);
@@ -170,7 +170,13 @@ export class ExecutionGraph {
         logger.warn(`[execution-graph] Node "${node.id}" depends on unknown node "${dep}"`);
       }
     }
+    // Tentatively insert, then verify no cycle was introduced
     this.nodes.set(node.id, node);
+    const cycle = this._detectCycle();
+    if (cycle) {
+      this.nodes.delete(node.id); // roll back
+      throw new Error(`[execution-graph] Adding node "${node.id}" creates a cycle: ${cycle}`);
+    }
   }
 
   /** Transition a node to 'running'. */
@@ -309,6 +315,44 @@ export class ExecutionGraph {
   }
 
   // ── Private ────────────────────────────────────────────────────────────────
+
+  /**
+   * DFS-based cycle detection over the current node set.
+   * Returns a human-readable cycle description string if a cycle exists, null if the graph is a DAG.
+   *
+   * Algorithm: colour each node white (unvisited) → grey (in current DFS stack) → black (done).
+   * A back-edge to a grey node signals a cycle.
+   */
+  private _detectCycle(): string | null {
+    const WHITE = 0, GREY = 1, BLACK = 2;
+    const colour = new Map<string, number>();
+    for (const id of this.nodes.keys()) colour.set(id, WHITE);
+
+    const dfs = (id: string, path: string[]): string | null => {
+      colour.set(id, GREY);
+      const node = this.nodes.get(id);
+      for (const dep of node?.dependsOn ?? []) {
+        const c = colour.get(dep) ?? WHITE;
+        if (c === GREY) {
+          return [...path, id, dep].join(' → ');
+        }
+        if (c === WHITE) {
+          const result = dfs(dep, [...path, id]);
+          if (result) return result;
+        }
+      }
+      colour.set(id, BLACK);
+      return null;
+    };
+
+    for (const id of this.nodes.keys()) {
+      if ((colour.get(id) ?? WHITE) === WHITE) {
+        const cycle = dfs(id, []);
+        if (cycle) return cycle;
+      }
+    }
+    return null;
+  }
 
   private _require(id: string): ExecutionNode {
     const node = this.nodes.get(id);

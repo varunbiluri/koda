@@ -8,14 +8,21 @@ import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
 import { TaskRouter, TaskComplexity } from '../../orchestrator/task-router.js';
-import type { TaskClassification } from '../../orchestrator/task-router.js';
 import { logger } from '../../utils/logger.js';
-import type { ChatMessage } from '../../ai/types.js';
 import type { RepoIndex } from '../../types/index.js';
-import { loadSession, saveSession } from '../../memory/conversation-store.js';
+// loadSession/saveSession removed — ReasoningEngine is stateless; no cross-call history is persisted
 import { PlanningEngine } from '../../ai/reasoning/planning-engine.js';
 import { PlanExecutor } from '../../execution/plan-executor.js';
 import { VerificationLoop } from '../../execution/verification-engine.js';
+import { RepoContextAnalyzer } from '../../intelligence/repo-context-analyzer.js';
+import { DagVerification } from '../../intelligence/dag-verification.js';
+import { TaskMemoryStore } from '../../intelligence/task-memory-store.js';
+import { GlobalMemoryStore } from '../../intelligence/global-memory-store.js';
+import { ASTRepoGraph } from '../../intelligence/ast-repo-graph.js';
+import { ProactiveAdvisor } from '../../intelligence/proactive-advisor.js';
+import { ImpactAnalyzer } from '../../intelligence/impact-analyzer.js';
+import { LearningLoop } from '../../intelligence/learning-loop.js';
+import { ConfidenceEngine } from '../../intelligence/confidence-engine.js';
 
 export interface ConversationContext {
   rootPath: string;
@@ -45,8 +52,10 @@ export interface ConversationResponse {
  */
 export class ConversationEngine {
   private ui: UIRenderer;
-  /** Rolling conversation history shared across all AI turns in this session. */
-  private history: ChatMessage[] = [];
+  // History accumulation removed: ReasoningEngine.chat() is explicitly stateless —
+  // it rebuilds context from the repo index on every call. Persisting a history
+  // array that chat() ignores creates false UX expectations (multi-turn continuity
+  // that doesn't actually work). Callers should not pass history to chat().
   private sessionId: string = `session-${Date.now()}`;
   /** Timeline entries from the last chat() call. */
   private lastTimeline: Array<{ name: string; durationMs: number }> = [];
@@ -57,34 +66,27 @@ export class ConversationEngine {
     this.ui = ui ?? new UIRenderer();
   }
 
-  getHistoryLength(): number { return this.history.length; }
+  getHistoryLength(): number { return 0; } // stateless — no history
 
   resetHistory(): void {
-    this.history = [];
     this.sessionId = `session-${Date.now()}`;
     this.ui.resetSessionState();
   }
 
   /**
-   * Load the most recent persisted session from disk.
-   * Call this once after construction if you want history continuity.
-   * Returns the number of messages restored (0 if no session found).
+   * Previously loaded session history from disk; now a no-op.
+   * ReasoningEngine is stateless — history is not used between calls.
    */
-  async loadPersistedSession(rootPath: string): Promise<number> {
-    try {
-      const session = await loadSession(rootPath);
-      if (session && session.messages.length > 0) {
-        this.history = session.messages;
-        this.sessionId = session.sessionId;
-        return session.messages.length;
-      }
-    } catch {
-      // Not fatal — start fresh
-    }
+  async loadPersistedSession(_rootPath: string): Promise<number> {
     return 0;
   }
 
-  async process(input: string, ctx: ConversationContext, signal?: AbortSignal): Promise<ConversationResponse> {
+  async process(
+    input: string,
+    ctx: ConversationContext,
+    signal?: AbortSignal,
+    onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
+  ): Promise<ConversationResponse> {
     const normalized = input.trim().toLowerCase();
 
     // ── 1. Quit ──────────────────────────────────────────────────────────────
@@ -111,7 +113,7 @@ export class ConversationEngine {
 
     // ── 5. AI-first path ─────────────────────────────────────────────────────
     if (ctx.hasConfig) {
-      return this.handleWithAI(input, ctx, signal);
+      return this.handleWithAI(input, ctx, signal, onDiff);
     }
 
     // ── 6. No AI config ──────────────────────────────────────────────────────
@@ -132,10 +134,8 @@ export class ConversationEngine {
     input: string,
     ctx: ConversationContext,
     signal?: AbortSignal,
+    onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<ConversationResponse> {
-    // Record the user turn before calling AI so the history is available inside chat()
-    this.history.push({ role: 'user', content: input });
-
     this.ui.renderThinking();
     this.lastTimeline = [];
     this.ui.resetSessionState();
@@ -168,14 +168,14 @@ export class ConversationEngine {
       const provider = new AzureAIProvider(config);
 
       if (route === TaskComplexity.COMPLEX && ctx.index) {
-        // ── COMPLEX path — multi-agent orchestration ──────────────────────
-        logger.info(`[router] Routing to agent orchestrator — ${reason}`);
-        assistantResponse = await this._runWithOrchestrator(input, ctx, provider, signal);
-        // Rendering already done inside _runWithOrchestrator
+        // ── COMPLEX path — DAG-based parallel execution via GraphScheduler ─
+        logger.info(`[router] Routing to graph scheduler — ${reason}`);
+        assistantResponse = await this._runWithGraphScheduler(input, ctx, provider, signal, onDiff);
+        // Rendering already done inside _runWithGraphScheduler
       } else if (route === TaskComplexity.MEDIUM) {
         // ── MEDIUM path — planning + structured execution + verification ───
         logger.info(`[router] Routing to feature execution pipeline — ${reason}`);
-        assistantResponse = await this._runWithPipeline(input, ctx, provider, signal);
+        assistantResponse = await this._runWithPipeline(input, ctx, provider, signal, onDiff);
       } else {
         // ── SIMPLE path — ReasoningEngine.chat() ─────────────────────────
         logger.info(`[router] Routing to reasoning engine — ${reason}`);
@@ -191,7 +191,7 @@ export class ConversationEngine {
             rootPath:  ctx.rootPath,
             fileCount: ctx.index?.metadata.fileCount ?? 0,
           },
-          this.history,
+          [], // stateless — no cross-call history
           (chunk) => {
             assistantResponse += chunk;
             this.ui.renderStreamChunk(chunk);
@@ -211,6 +211,8 @@ export class ConversationEngine {
           },
           signal,
           // SIMPLE path: default 20 rounds (no per-step capping)
+          undefined,
+          onDiff,
         );
 
         this.lastTimeline = timeline;
@@ -225,25 +227,7 @@ export class ConversationEngine {
         }
       }
 
-      // ── Step 2: Post-processing (all paths) ───────────────────────────────
-      if (assistantResponse) {
-        this.history.push({ role: 'assistant', content: assistantResponse });
-      }
-
-      // Cap history at 50 messages (summarization handled by ReasoningEngine)
-      if (this.history.length > 50) {
-        this.history = this.history.slice(-50);
-      }
-
-      // Persist session to disk (best-effort)
-      try {
-        await saveSession(this.history, ctx.rootPath, this.sessionId);
-      } catch {
-        // Non-fatal — session persistence failure should not interrupt the user
-      }
     } catch (err) {
-      // Remove the optimistically-pushed user message on failure
-      this.history.pop();
       this.ui.stopSpinner(false, (err as Error).message);
     }
 
@@ -289,10 +273,302 @@ export class ConversationEngine {
   }
 
   /**
-   * Execute the task using the full AgentOrchestrator via ExecutionEngine.
+   * Execute a COMPLEX task using the DAG-based GraphScheduler.
    *
-   * Formats the `ExecutionReport` into a markdown-compatible string so it can be
-   * rendered by the same UI path as chat() responses and stored in history.
+   * Pipeline:
+   *   1. TaskGraphBuilder.build() — LLM decomposes the task into a typed DAG
+   *   2. GraphScheduler.run()     — executes nodes in parallel, respecting deps
+   *   3. Format SchedulerResult   — surface completion stats and node outputs
+   *
+   * Falls back to ReasoningEngine.chat() on any graph build or scheduler error.
+   */
+  private async _runWithGraphScheduler(
+    input:    string,
+    ctx:      ConversationContext,
+    provider: AzureAIProvider,
+    signal?:  AbortSignal,
+    onDiff?:  (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
+  ): Promise<string> {
+    const chatContext = {
+      repoName:  path.basename(ctx.rootPath),
+      branch:    ctx.branch ?? 'unknown',
+      rootPath:  ctx.rootPath,
+      fileCount: ctx.index?.metadata.fileCount ?? 0,
+    };
+
+    let assistantResponse = '';
+
+    try {
+      this.ui.stream('INFO GRAPH: building execution DAG');
+
+      // ── Step 1: Build DAG ────────────────────────────────────────────────
+      const { TaskGraphBuilder } = await import('../../planning/task-graph-builder.js');
+      const builder = new TaskGraphBuilder(provider);
+
+      // ── Part 6: Detect repo environment for context-aware planning ───────
+      const repoEnv = await RepoContextAnalyzer.analyze(ctx.rootPath);
+      this.ui.stream(`INFO ENV: ${repoEnv.runtime}${repoEnv.framework ? ` · ${repoEnv.framework}` : ''} · build=${repoEnv.buildCommand} · test=${repoEnv.testCommand}`);
+
+      // ── Autonomous Intelligence: load cross-task memory + learning data ──
+      const [globalMemory, learner] = await Promise.all([
+        GlobalMemoryStore.load(ctx.rootPath),
+        LearningLoop.load(ctx.rootPath),
+      ]);
+
+      // ── Autonomous Intelligence: build AST-powered repo graph ────────────
+      const filePaths = ctx.index?.chunks.map((c) => c.filePath) ?? [];
+      const repoGraph = await ASTRepoGraph.build(ctx.rootPath, [...new Set(filePaths)]);
+      const impactAnalyzer = new ImpactAnalyzer(ctx.rootPath, repoGraph);
+      const advisor = new ProactiveAdvisor(ctx.rootPath, repoGraph);
+
+      // Retrieve compact repo context for graph prompting (best-effort)
+      let repoContext: string = repoEnv.formatForPrompt();
+      if (ctx.index) {
+        try {
+          const { getRepoIntelligenceCache } = await import('../../cache/repo-intelligence-cache.js');
+          const cache = await getRepoIntelligenceCache(ctx.rootPath);
+          const archSummary = (await cache.getArchitectureSummary()) ?? undefined;
+          if (archSummary) repoContext += '\n\n' + archSummary;
+        } catch {
+          // non-fatal
+        }
+      }
+
+      // ── Global memory context hint ────────────────────────────────────────
+      const memHint = globalMemory.getContextHint(input);
+      if (memHint) {
+        repoContext += '\n\n' + memHint;
+        this.ui.stream(`INFO MEMORY: injecting context from ${globalMemory.taskCount} past task(s)`);
+      }
+
+      // ── AST symbol context for smarter planning ───────────────────────────
+      const topFiles = (ctx.index?.chunks ?? [])
+        .sort((a: { filePath: string }, b: { filePath: string }) => a.filePath.localeCompare(b.filePath))
+        .map((c: { filePath: string }) => c.filePath)
+        .slice(0, 20);
+      const symbolCtx = repoGraph.buildSymbolContext(topFiles);
+      if (symbolCtx) repoContext += '\n\n' + symbolCtx;
+
+      // ── Learning loop hint ────────────────────────────────────────────────
+      const learnerStats = learner.getStats();
+      if (learnerStats.totalObservations > 0) {
+        this.ui.stream(`INFO LEARN: ${learnerStats.totalObservations} observations across ${learnerStats.failureTypesLearned} failure type(s)`);
+      }
+
+      // ── Part 4: Create task memory store for this execution ───────────────
+      const taskMemory = new TaskMemoryStore();
+
+      const graph = await builder.build(input, repoContext);
+      const allNodes = graph.getAllNodes();
+      this.ui.stream(`INFO GRAPH: ${allNodes.length} nodes — launching scheduler`);
+
+      // ── Part 1: Initialise DAG visualizer with all nodes in pending state ─
+      this.ui.dagStart(
+        allNodes.map((n) => ({ id: n.id, description: n.description })),
+      );
+
+      // ── Step 2: Run via GraphScheduler ───────────────────────────────────
+      const { GraphScheduler } = await import('../../execution/graph-scheduler.js');
+      const scheduler = new GraphScheduler(provider, ctx.index, chatContext);
+
+      const nodeOutputs: Array<{ id: string; output: string }> = [];
+
+      const result = await scheduler.run(graph, {
+        maxParallel: 3,
+        signal,
+        onNodeStart: (node) => {
+          this.ui.dagNodeStart(node.id);
+        },
+        onNodeComplete: (node, nodeResult) => {
+          this.ui.dagNodeDone(node.id, nodeResult.durationMs);
+          // ── Part 4: record decision in task memory ────────────────────────
+          taskMemory.recordDecision(node.id, `${node.type} completed in ${nodeResult.durationMs}ms`);
+          for (const f of nodeResult.filesModified ?? []) taskMemory.recordFileTouched(f);
+          if (nodeResult.output?.trim()) {
+            nodeOutputs.push({ id: node.id, output: nodeResult.output });
+            // Stream the node's output so the user sees incremental progress
+            this.ui.renderStreamChunk(`\n**[${node.id}]** ${nodeResult.output.slice(0, 600)}\n`);
+            assistantResponse += `\n**[${node.id}]** ${nodeResult.output.slice(0, 600)}\n`;
+          }
+        },
+        onNodeFailed: (node, error) => {
+          this.ui.dagNodeFailed(node.id);
+          this.ui.stream(`WARN NODE_FAILED: ${node.id} — ${error.slice(0, 120)}`);
+          // ── Part 4: record error in task memory ───────────────────────────
+          taskMemory.recordError(node.id, error);
+        },
+        onRetry: (node, attempt) => {
+          this.ui.stream(`INFO RETRY: ${node.id} attempt=${attempt}`);
+        },
+        onRecoveryInserted: (recoveryId, parentId) => {
+          this.ui.stream(`INFO RECOVERY: inserted ${recoveryId} after ${parentId}`);
+        },
+        onChunk: (_nodeId, chunk) => {
+          // Individual node chunks are already captured in onNodeComplete
+          // Avoid double-streaming here; just accumulate silently
+          void chunk;
+        },
+      });
+
+      // ── Part 3: Post-execution verification ──────────────────────────────
+      let verificationPassed = true;
+      if (result.failed === 0) {
+        try {
+          this.ui.stream('INFO VERIFY: running post-execution checks');
+          const verifier = new DagVerification(ctx.rootPath, {
+            buildCmd: repoEnv.buildCommand,
+            testCmd:  repoEnv.testCommand,
+          });
+          const verResult = await verifier.verify({
+            onStage: (msg) => this.ui.stream(msg),
+            signal,
+          });
+          verificationPassed = verResult.passed;
+          this.ui.stream(`INFO VERIFY: ${verResult.summary} (${verResult.durationMs}ms)`);
+
+          if (!verResult.passed) {
+            const fixPrompt = verifier.buildFixPrompt(verResult);
+            this.ui.stream('WARN VERIFY: failures detected — inserting fix node');
+            taskMemory.recordDecision('dag_verification', `Verification failed: ${verResult.summary}`);
+            // Record failures in learning loop
+            for (const check of verResult.checks.filter((c) => !c.passed)) {
+              if (check.analysis) {
+                learner.recordOutcome(check.analysis.type, check.analysis.fixPrompt.slice(0, 80), false);
+                globalMemory.recordIssue(`${check.name} ${check.analysis.type}`);
+              }
+            }
+            this.ui.renderStreamChunk(`\n**Verification failed.** Fix required:\n\`\`\`\n${fixPrompt.slice(0, 800)}\n\`\`\`\n`);
+            assistantResponse += `\n**Verification failed.** ${verResult.summary}`;
+          } else {
+            // Record successful verification in learning loop
+            for (const check of verResult.checks) {
+              if (check.analysis) {
+                learner.recordOutcome(check.analysis.type, check.analysis.fixPrompt.slice(0, 80), true);
+              }
+            }
+          }
+        } catch (verErr) {
+          logger.warn(`[dag-verification] Skipped: ${(verErr as Error).message}`);
+        }
+      }
+
+      // ── Part 4: Task memory summary ───────────────────────────────────────
+      if (!taskMemory.isEmpty()) {
+        this.ui.stream(`INFO MEMORY: ${taskMemory.formatSummary()}`);
+      }
+
+      // ── Part 5: Impact analysis for changed files ─────────────────────────
+      const touchedFiles = taskMemory.filesTouched;
+      if (touchedFiles.length > 0) {
+        const impactReport = impactAnalyzer.analyze(touchedFiles);
+        const impactWarn   = impactAnalyzer.formatWarning(impactReport);
+        if (impactWarn) this.ui.stream(impactWarn);
+      }
+
+      // ── Part 3: Proactive suggestions ────────────────────────────────────
+      try {
+        const suggestions = await advisor.suggest(touchedFiles);
+        for (const line of advisor.formatForStream(suggestions)) {
+          this.ui.stream(line);
+        }
+      } catch {
+        // non-fatal
+      }
+
+      // ── Confidence scoring ────────────────────────────────────────────────
+      const confidence = ConfidenceEngine.assessWithMemory(
+        {
+          retries:            result.retries,
+          verificationPassed: verificationPassed,
+          impactLevel:        touchedFiles.length > 0
+            ? impactAnalyzer.analyze(touchedFiles).level
+            : 'LOW',
+        },
+        input,
+        globalMemory,
+      );
+      this.ui.stream(ConfidenceEngine.formatStage(confidence));
+
+      // Record semantic patterns from verification results
+      if (!verificationPassed) {
+        globalMemory.recordSemanticPattern(
+          input.slice(0, 120),
+          'Execution completed but verification failed',
+          'Re-run verification after fixing reported issues',
+          'Verification failure indicates code quality issue post-execution',
+          'execution_complete → verification_failed',
+        );
+      }
+
+      // ── Global memory: persist task record ───────────────────────────────
+      globalMemory.recordTask({
+        description:  input.slice(0, 120),
+        succeeded:    result.failed === 0 && verificationPassed,
+        durationMs:   result.durationMs,
+        filesChanged: touchedFiles,
+        retries:      result.retries,
+      });
+      await Promise.all([globalMemory.save(), learner.save()]);
+
+      // ── Step 3: Completion summary ───────────────────────────────────────
+      this.ui.renderStreamEnd();
+
+      const summary = result.failed === 0
+        ? `All ${result.completed} nodes completed successfully.`
+        : `${result.completed} nodes succeeded, ${result.failed} failed.`;
+
+      if (result.failedNodes.length > 0) {
+        this.ui.stream(`WARN Failed nodes: ${result.failedNodes.join(', ')}`);
+      }
+
+      this.ui.renderCompletionSummary({
+        status:       result.failed === 0 && verificationPassed ? 'ok' : 'failed',
+        stepsOrNodes: result.completed + result.failed,
+        toolCalls:    result.totalToolCalls,
+        durationMs:   result.durationMs,
+        filesChanged: taskMemory.filesTouched,
+      });
+
+      assistantResponse += `\n${summary}`;
+      return assistantResponse;
+
+    } catch (err) {
+      // ── Fallback: GraphScheduler failed → ReasoningEngine.chat() ─────────
+      const errMsg = (err as Error).message;
+      logger.warn(`[graph-scheduler] Failed (${errMsg}); falling back to reasoning engine`);
+      this.ui.stream(`WARN Graph execution error — falling back to reasoning engine`);
+
+      const engine  = new ReasoningEngine(ctx.index, provider);
+      const metrics = await engine.chat(
+        input,
+        {
+          repoName:  path.basename(ctx.rootPath),
+          branch:    ctx.branch ?? 'unknown',
+          rootPath:  ctx.rootPath,
+          fileCount: ctx.index?.metadata.fileCount ?? 0,
+        },
+        [],
+        (chunk) => { assistantResponse += chunk; this.ui.renderStreamChunk(chunk); },
+        (stage)  => this.ui.stream(stage),
+        undefined,
+        undefined,
+        undefined,
+        signal,
+        undefined,
+        onDiff,
+      );
+
+      this.ui.renderStreamEnd();
+      if (metrics) this.ui.renderExecutionSummary(metrics);
+
+      return assistantResponse;
+    }
+  }
+
+  /**
+   * Execute the task using the full AgentOrchestrator via ExecutionEngine.
+   * DEPRECATED: kept for reference only — COMPLEX tasks now route to
+   * _runWithGraphScheduler. This method is no longer called from the main path.
    *
    * Falls back to ReasoningEngine.chat() if:
    *   - ExecutionEngine.execute() throws
@@ -355,7 +631,7 @@ export class ConversationEngine {
           rootPath:  ctx.rootPath,
           fileCount: ctx.index?.metadata.fileCount ?? 0,
         },
-        this.history,
+        [], // stateless
         (chunk) => {
           assistantResponse += chunk;
           this.ui.renderStreamChunk(chunk);
@@ -396,6 +672,7 @@ export class ConversationEngine {
     ctx:      ConversationContext,
     provider: AzureAIProvider,
     signal?:  AbortSignal,
+    onDiff?:  (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<string> {
     const chatContext = {
       repoName:  path.basename(ctx.rootPath),
@@ -426,7 +703,7 @@ export class ConversationEngine {
 
       const { response, metrics: execMetrics } = await executor.execute(
         plan,
-        this.history,
+        [], // stateless
         (step, idx) => {
           // Advance the plan tracker as each step begins
           if (idx > 0) this.ui.advancePlan();
@@ -460,7 +737,7 @@ export class ConversationEngine {
       const verifier = new VerificationLoop(provider, ctx.index, chatContext);
       const verResult = await verifier.runWithRetry(
         ctx.rootPath,
-        this.history,
+        [], // stateless
         (stage) => this.ui.stream(stage),
         signal,
         executor.getStepContexts(),
@@ -491,7 +768,7 @@ export class ConversationEngine {
           rootPath:  ctx.rootPath,
           fileCount: ctx.index?.metadata.fileCount ?? 0,
         },
-        this.history,
+        [], // stateless
         (chunk) => {
           assistantResponse += chunk;
           this.ui.renderStreamChunk(chunk);
@@ -501,6 +778,8 @@ export class ConversationEngine {
         (files, tokens)        => { this.ui.updateContext(files, tokens); this.ui.renderContext(files, tokens); },
         (toolName, durationMs) => { this.ui.recordToolUsed(toolName); timeline.push({ name: toolName, durationMs }); },
         signal,
+        undefined,
+        onDiff,
       );
 
       this.lastTimeline = timeline;

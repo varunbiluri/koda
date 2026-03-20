@@ -142,11 +142,14 @@ export class AgentBudgetManager {
   }
 }
 
-// Default budget configuration
+// Default budget configuration.
+// These are high-water soft limits used for telemetry and graceful degradation,
+// NOT hard execution caps.  Reasoning engine trims context and continues when
+// limits are approached rather than stopping the session.
 export const defaultBudgetConfig: BudgetConfig = {
-  globalMaxTokens: 500000, // 500K tokens total
-  perAgentMaxCalls: 20, // Max 20 AI calls per agent
-  perAgentMaxTokens: 50000, // Max 50K tokens per agent
+  globalMaxTokens:   5_000_000, // 5M tokens — effectively unlimited for normal sessions
+  perAgentMaxCalls:        100, // 100 LLM calls per agent before soft warning
+  perAgentMaxTokens:   500_000, // 500K tokens per agent
 };
 
 // Singleton instance with default config

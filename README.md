@@ -1,357 +1,232 @@
-# Koda
+# Koda — Autonomous AI Engineer
 
-**An autonomous AI software engineer for your codebase.**
+**Give Koda a task. Come back to a working diff.**
 
-Koda indexes your repository, reasons over code with your AI provider, and executes multi-agent workflows to build features, fix bugs, and refactor code — all from the terminal. It operates in a conversational loop, verifies its own output, and asks before doing anything destructive.
+Koda fixes bugs, adds features, and refactors code — end-to-end. It verifies
+the result with your tests and self-corrects when it fails. No hand-holding.
 
 [![CI](https://github.com/varunbiluri/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/varunbiluri/koda/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
+[![Tests](https://img.shields.io/badge/tests-1219%20passing-brightgreen)](#)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 
 ---
 
-![Koda demo](assets/demo.gif)
+![Koda — autonomous bug fix demo](assets/demo.gif)
 
 ---
 
-## Contents
-
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [How it works](#how-it-works)
-- [Commands](#commands)
-- [Configuration](#configuration)
-- [Safety model](#safety-model)
-- [IDE integration](#ide-integration)
-- [Background agents](#background-agents)
-- [Architecture](#architecture)
-- [Development](#development)
-- [Contributing](#contributing)
-
----
-
-## Installation
-
-**Requirements:** Node.js 18+
+## 3 commands to start
 
 ```bash
-npm install -g @varunbilluri/koda
+npm install -g @varunbilluri/koda   # 1. install
+koda init                            # 2. index your repo (10s)
+koda login                           # 3. configure AI provider
 ```
 
-### Build from source
+Then fix your first bug:
 
 ```bash
-git clone https://github.com/varunbiluri/koda
-cd koda
-pnpm install     # requires pnpm 10+
-pnpm build
-pnpm link --global
+koda fix "users can't log in after password reset"
+```
+
+```
+⚡ Koda — Autonomous Bug Fix
+   users can't log in after password reset
+
+── Step 1 / 3 ──────────────────────────────
+   ○ Searching for password reset flow...
+   ○ Root cause: token not invalidated after use
+   ○ Patching src/auth/reset-service.ts
+   ○ Verifying — running pnpm test...
+   ✓ Fix verified in 1 step
+
+✓ Done in 14.2s
+  3/4 tasks completed (75%) · ~1.2h saved
 ```
 
 ---
 
-## Quick start
+## What Koda does differently
 
+Most AI coding tools **suggest** code. You still have to read it, evaluate it,
+paste it, and run the tests yourself.
+
+Koda **executes**:
+
+| Step | Other tools | Koda |
+|------|------------|------|
+| Find root cause | You | ✅ Autonomous |
+| Write the fix | Suggests | ✅ Applies |
+| Run tests | You | ✅ Autonomous |
+| Self-correct on failure | Never | ✅ Up to 3 loops |
+| Impact analysis | Never | ✅ Before every write |
+| Learn from this repo | Never | ✅ Every session |
+
+---
+
+## Three primary workflows
+
+### Fix a bug
 ```bash
-# 1. Index your repository (run once per project)
-koda init
-
-# 2. Configure your AI provider
-koda login
-
-# 3. Start the conversational session
-koda
+koda fix "null pointer in auth middleware"
+koda fix "race condition in message queue handler"
+koda fix "memory leak after connection pool exhausted"
 ```
 
-Once the session is running, type in plain English:
-
-```
-> explain how the authentication middleware works
-> add a rate-limit endpoint to the API router
-> fix the session token expiry bug
-> refactor the database layer to use connection pooling
-```
-
-Koda will search your codebase, plan the work, write code, run verification (tests + type-check + lint), and ask before committing anything.
-
----
-
-## How it works
-
-```
-Your request
-    │
-    ▼
-Intent detection          ← classify: explain / build / fix / refactor / search
-    │
-    ▼
-Repository search         ← TF-IDF + symbol index retrieval
-    │
-    ▼
-Task routing              ← SIMPLE → chat | MEDIUM → plan executor | COMPLEX → agent graph
-    │
-    ├─ SIMPLE ─▶  ReasoningEngine.chat()   ← single-turn AI response
-    │
-    ├─ MEDIUM ─▶  PlanExecutor             ← sequential plan steps
-    │               │
-    │               └─▶ VerificationLoop   ← tests · type-check · lint → retry on fail
-    │
-    └─ COMPLEX ─▶ GraphScheduler           ← parallel agent DAG
-                    │
-                    ├─▶ CodingAgent
-                    ├─▶ TestAgent
-                    ├─▶ RefactorAgent
-                    └─▶ VerificationAgent
-```
-
-Every file write goes through a **permission gate** and every set of changes can be previewed as a unified diff before being applied.
-
----
-
-## Commands
-
-### Conversational session
-
-| Command | Description |
-|---------|-------------|
-| `koda` | Start interactive session (natural language) |
-| `koda repl` | Start REPL mode |
-
-### Indexing
-
-| Command | Description |
-|---------|-------------|
-| `koda init` | Index the repository (AST parse + TF-IDF embed) |
-| `koda status` | Show index statistics |
-| `koda index-status` | Show shard and worker status |
-
-### AI tasks
-
-| Command | Description |
-|---------|-------------|
-| `koda ask <question>` | Ask a question about the codebase |
-| `koda explain <symbol>` | Deep explanation of a symbol |
-| `koda build <task>` | Build a new feature |
-| `koda fix <task>` | Fix a bug |
-| `koda refactor <task>` | Refactor code |
-| `koda review` | Code quality and security analysis |
-| `koda test` | Find untested functions, generate test scaffolding |
-
-### Planning & orchestration
-
-| Command | Description |
-|---------|-------------|
-| `koda plan <task>` | Generate an execution plan |
-| `koda graph <task>` | Generate a task dependency graph |
-| `koda improve` | Run all background agents, show patch preview |
-
-### AI provider
-
-| Command | Description |
-|---------|-------------|
-| `koda login` | Configure provider credentials interactively |
-| `koda models` | List available models |
-| `koda use <model>` | Switch to a different model |
-| `koda config` | Show or update configuration |
-
-### Symbol intelligence
-
-| Command | Description |
-|---------|-------------|
-| `koda symbols <query>` | Search the symbol index |
-| `koda skills` | List and manage skills |
-| `koda workers` | Show distributed worker status |
-
-### Developer platform
-
-| Command | Description |
-|---------|-------------|
-| `koda watch` | Watch for file changes, run background agents |
-| `koda start-lsp` | Start LSP server (for editor integrations) |
-
-### Observability
-
-| Command | Description |
-|---------|-------------|
-| `koda history` | View past executions |
-| `koda replay` | Replay a past execution |
-| `koda doctor` | Run health checks |
-
----
-
-## Configuration
-
-Run `koda login` to configure interactively. Koda prompts for your provider, endpoint, API key, and lets you pick a model with arrow keys. Config is stored in `.koda/config.json` at the repository root.
-
-```json
-{
-  "provider": "azure",
-  "endpoint": "https://your-resource.openai.azure.com",
-  "apiKey": "...",
-  "model": "gpt-4o",
-  "apiVersion": "2024-05-01-preview"
-}
-```
-
-Supported providers: **Azure AI Foundry**, **OpenAI**, **Anthropic**, **Ollama**.
-
-Switch models without re-entering credentials:
-
+### Add a feature
 ```bash
-koda use gpt-4o-mini
+koda add "rate limiting middleware with Redis"
+koda add "password strength validation on signup"
+koda add "export users to CSV endpoint"
+```
+
+### Refactor a module
+```bash
+koda refactor src/auth/
+koda refactor src/database/connection.ts
+```
+
+All three workflows: plan → implement → run tests → self-correct if needed → present diff.
+
+---
+
+## First-run experience
+
+`koda init` detects your stack and walks you through setup on the first run:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Welcome to Koda — your autonomous engineer
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  What I found:
+    Runtime:     Node.js
+    Framework:   Express/Fastify
+    Tests:       vitest
+    Files:       847 indexed
+
+  What I can do:
+    ①  Fix bugs — describe the problem, I find the cause and patch it
+    ②  Add features — describe what you need, I plan, implement, and verify
+    ③  Refactor — point me at a module, I restructure it safely
+
+  Why I'm different:
+    →  I execute tasks — not just suggest them
+    →  I fix my own mistakes — autonomous retry with verification
+    →  I learn from this repo — gets smarter each session
 ```
 
 ---
 
 ## Safety model
 
-Koda operates on a three-tier consent model. Every operation is classified before execution:
+Koda never does something destructive without your explicit go-ahead:
 
 | Tier | Examples | Behaviour |
 |------|----------|-----------|
-| **ALLOW** | `read_file`, `search_code`, `git_log`, `git_status` | Auto-approved, no prompt |
-| **ASK** | `write_file`, `edit_file`, `git_commit`, `run_terminal` | Prompts for approval |
-| **DENY** | `rm -rf`, `git push --force`, `sudo`, `DROP TABLE` | Blocked unconditionally |
+| **AUTO** | `read_file`, `search_code`, `git_log` | Always approved — zero friction |
+| **ASK** | `write_file`, `git_commit`, `run_terminal` | Prompts before every state change |
+| **BLOCK** | `rm -rf`, `git push --force`, `DROP TABLE` | Unconditionally blocked — forever |
 
 Additional safeguards:
-
-- **Patch-based edits** — all file changes are unified diffs, never blind overwrites
-- **Diff preview** — `koda improve` shows every change before applying
-- **Verification loops** — after each agent iteration, runs `tsc`, `pnpm test`, and linting; retries on failure
-- **Worktree isolation** — complex tasks run in a separate git worktree (`feature/koda-*`) so your working tree stays clean
-- **File locking** — prevents concurrent agent modifications to the same file
-- **Token budgets** — configurable per-agent and global token limits stop runaway usage
-- **Path escaping checks** — agents cannot write files outside the repository root
-- **Output limits** — tool outputs are capped in size before being fed back to the AI
-
-In non-interactive environments (CI, pipes) all `ASK`-tier operations are auto-approved.
+- All edits are unified diffs, never blind overwrites
+- Confidence scoring — stops and asks when unsure (not guesses)
+- Impact analysis warns before touching high-dependency files
+- Token budgets cap runaway usage per agent and globally
 
 ---
 
-## IDE integration
-
-Start the LSP server:
+## Configuration
 
 ```bash
-koda start-lsp
+koda login   # interactive — picks provider, endpoint, key, model
 ```
 
-The server speaks JSON-RPC over stdio and supports:
+Config stored at `.koda/config.json`. Supported providers:
 
-- **Hover** — symbol type, documentation, and AI explanation at cursor
-- **Go-to-definition** — backed by the Koda symbol index
-- **Find references** — callers and usages across the repo
-- **Workspace symbol search** — fuzzy match across all indexed symbols
-- **Code actions** — Explain Code, Refactor, Generate Tests, Optimize File
+| Provider | Models |
+|----------|--------|
+| **Azure AI Foundry** | gpt-4o, gpt-4o-mini, o1, o3-mini |
+| **OpenAI** | gpt-4o, gpt-4-turbo, gpt-3.5-turbo |
+| **Anthropic** | claude-3-5-sonnet, claude-3-haiku |
+| **Ollama** | llama3, mistral, codellama (local) |
 
-The bundled VS Code extension (`extensions/vscode/`) connects automatically. For other editors, point your LSP client at `koda start-lsp`.
+Switch model without re-configuring:
+```bash
+koda use gpt-4o-mini
+```
 
 ---
 
-## Background agents
+## All commands
 
-`koda watch` starts a file-system watcher and dispatches background agents as you work:
+```
+Core workflows:
+  koda fix  "<bug>"       Fix a bug end-to-end
+  koda add  "<feature>"   Add a feature with tests
+  koda auto "<task>"      Fully autonomous mode (plan → execute → verify)
 
-| Agent | Trigger | What it does |
-|-------|---------|-------------|
-| `test-coverage-agent` | File save | Identifies functions lacking test coverage |
-| `security-scan-agent` | File save · commit | OWASP-style vulnerability scan |
-| `performance-analysis-agent` | Git commit | Detects O(n²) loops, memory leaks, blocking I/O |
-| `dead-code-agent` | Pull request | Finds unused exports and unreachable code |
+Analysis:
+  koda ask      "<question>"   Ask about the codebase
+  koda explain  "<symbol>"     Deep explanation of any symbol
+  koda review                  Code quality + security scan
+  koda plan     "<task>"       Generate an execution plan (no writes)
 
-Results are written to `.koda/background-results/` and shown inline in the terminal.
+Indexing:
+  koda init [--force]     Index / re-index the repository
+  koda status             Index statistics
+  koda symbols "<query>"  Search the symbol index
+
+Configuration:
+  koda login              Configure AI provider interactively
+  koda models             List available models
+  koda use <model>        Switch model
+  koda config             Show / update config
+
+Developer platform:
+  koda watch              Watch for changes, run background agents
+  koda start-lsp          Start LSP server (VS Code / Neovim)
+  koda improve            Run all agents, preview patches
+
+Observability:
+  koda doctor             Health check — diagnose problems
+  koda history            View past executions
+  koda feedback           Submit feedback or bug report
+```
 
 ---
 
-## Architecture
+## Requirements
 
-```
-src/
-├── ai/               # Providers (Azure / OpenAI / Anthropic / Ollama), reasoning engine,
-│                     # context budget manager, conversation summarizer
-├── agents/           # 20+ agent implementations — supervisor, coding, test, refactor,
-│                     # docs, security, verification, repository explorer
-├── background/       # Background agent manager and task scheduler
-├── budget/           # Per-agent and global token budget management
-├── cli/              # Commander.js commands, interactive session, intent detector
-├── context/          # Conversation summarization and context compression
-├── distributed/      # Worker manager and task dispatcher
-├── engine/           # Tree-sitter AST parsing (TypeScript, JavaScript, Python),
-│                     # TF-IDF embedding, chunking, file discovery
-├── execution/        # Multi-agent execution engine, graph scheduler, plan executor,
-│                     # failure analyzer, verification engine
-├── hierarchy/        # Hierarchical supervisor / coordinator / router
-├── indexing/         # Incremental indexer, shard manager, worker pool
-├── lsp/              # LSP server (stdio JSON-RPC), hover, symbols, code actions
-├── memory/           # Workspace memory, conversation store, execution history,
-│                     # learning engine
-├── observability/    # Execution tracker, event logger
-├── orchestrator/     # Agent registry, wave scheduler, task decomposer, task router
-├── patch/            # Diff generation and application
-├── planning/         # Task graph builder, tool planner
-├── preview/          # Patch preview workflow, terminal and markdown diff renderer
-├── runtime/          # Permission gate, worktree manager, sandbox, command executor,
-│                     # tool result index
-├── search/           # Query engine (TF-IDF), semantic search, hybrid retrieval
-├── security/         # Permission manager
-├── skills/           # Skill registry and executor
-├── store/            # Index and vector store persistence
-├── summaries/        # File and symbol summarization
-├── symbols/          # Symbol index, extractor, and call graph
-├── tools/            # 22 AI-callable tools: filesystem, git, terminal, web, edit
-├── watcher/          # File system event service and typed event bus
-└── extensions/vscode # VS Code extension (LanguageClient)
-```
-
-### Tool registry
-
-The AI has access to 22 tools at runtime:
-
-| Category | Tools |
-|----------|-------|
-| Filesystem | `read_file` · `write_file` · `edit_file` · `list_files` · `search_files` |
-| Code search | `search_code` · `grep_code` |
-| Repository | `repo_explorer` · `list_directory` |
-| Git | `git_branch` · `git_status` · `git_diff` · `git_log` · `git_add` · `git_commit` · `git_push` · `git_create_pr` |
-| Terminal | `run_terminal` |
-| Web | `fetch_url` |
-| Patch | `apply_patch` |
-| Koda commit | `koda_commit` |
-
-All tools check permissions before executing.
+- **Node.js 18+**
+- An AI provider (Azure, OpenAI, Anthropic, or Ollama)
+- Your project uses `pnpm`, `npm`, `yarn`, `cargo test`, `go test`, or `pytest`
 
 ---
 
-## Development
+## Build from source
 
 ```bash
-pnpm build        # TypeScript compile — zero errors required
-pnpm test         # Run all 1000+ tests with Vitest
-pnpm dev          # Run via tsx (no compile step)
+git clone https://github.com/varunbiluri/koda
+cd koda
+pnpm install
+pnpm build
+pnpm link --global
+pnpm test        # 1219 tests, should all pass
 ```
-
-Run a subset of tests:
-
-```bash
-pnpm test tests/lsp/
-pnpm test tests/background/
-pnpm test tests/cli/session/
-pnpm test tests/agents/
-pnpm test tests/unit/
-```
-
-CI runs on Node 18, 20, and 22.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports → [GitHub Issues](https://github.com/varunbiluri/koda/issues).
 
-Bug reports → [GitHub Issues](https://github.com/varunbiluri/koda/issues)
+Found something broken? `koda feedback` opens an issue template pre-filled
+with your session context.
 
 ---
 
 ## License
 
-[ISC](LICENSE)
+[ISC](LICENSE) — free to use, modify, and distribute.

@@ -36,6 +36,14 @@ const REF_DESCRIPTION_LIMIT = 120;
 /** Maximum result entries retained in memory before evicting the oldest. */
 const MAX_RESULTS = 200;
 
+/**
+ * How long (ms) a stored result is eligible for reuse.
+ * After this TTL a cache hit is rejected — the on-disk file may have changed.
+ * Set to 10 minutes: safe for a single interactive session; short enough that
+ * a file write followed by a re-read within the same session gets fresh data.
+ */
+const REUSE_TTL_MS = 10 * 60 * 1000;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ToolResult {
@@ -123,6 +131,51 @@ export class ToolResultIndex {
     logger.debug(`[tool-result-index] Stored ${id}: ${description.slice(0, 70)}`);
 
     return { id, tool, description };
+  }
+
+  // ── Cache lookup ───────────────────────────────────────────────────────────
+
+  /**
+   * Find an existing result for the same tool + args combination.
+   *
+   * Used for deduplication: if `read_file("src/auth.ts")` was already called in
+   * this session, reuse its stored output instead of executing the tool again.
+   *
+   * Returns undefined when:
+   *   - No matching entry exists
+   *   - The existing entry is older than REUSE_TTL_MS (file may have changed)
+   *   - Write-side tools (write_file, edit_file, git_commit, run_terminal, …)
+   *     are never reused — they have side effects on disk / git state.
+   */
+  findByToolAndArgs(
+    tool: string,
+    args: Record<string, string>,
+  ): ToolResult | undefined {
+    // Never reuse write/exec tools — they change state on disk or in git
+    const NO_REUSE = new Set([
+      'write_file', 'edit_file', 'apply_patch',
+      'run_terminal', 'git_add', 'git_commit', 'git_push',
+      'git_create_pr', 'koda_commit',
+    ]);
+    if (NO_REUSE.has(tool)) return undefined;
+
+    // Normalise arg object to a stable key (sort keys for order-independence)
+    const queryKey = JSON.stringify(
+      Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b))),
+    );
+    const now = Date.now();
+
+    // Iterate newest-first so the most recent result wins
+    const entries = Array.from(this.results.values()).reverse();
+    for (const r of entries) {
+      if (r.tool !== tool) continue;
+      if (now - r.timestamp > REUSE_TTL_MS) continue; // stale
+      const rKey = JSON.stringify(
+        Object.fromEntries(Object.entries(r.args).sort(([a], [b]) => a.localeCompare(b))),
+      );
+      if (rKey === queryKey) return r;
+    }
+    return undefined;
   }
 
   // ── Read ───────────────────────────────────────────────────────────────────
