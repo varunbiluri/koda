@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Koda — Autonomous AI Engineer</title>
+  <meta name="description" content="Give Koda a task. Come back to a working diff. Autonomous bug fixing, feature addition, and refactoring — verified by tests." />
+  <meta property="og:title" content="Koda — Autonomous AI Engineer" />
+  <meta property="og:description" content="Give Koda a task. Come back to a working diff." />
+  <meta property="og:image" content="https://raw.githubusercontent.com/varunbiluri/koda/main/assets/demo.gif" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #21262d;
+      --blue:     #58a6ff;
+      --green:    #3fb950;
+      --yellow:   #d29922;
+      --red:      #f85149;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --radius:   8px;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(13,17,23,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .nav-logo { font-weight: 700; font-size: 1.1rem; color: var(--text); text-decoration: none; }
+    .nav-logo span { color: var(--blue); }
+    .nav-links { display: flex; gap: 24px; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.15s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
+      background: var(--blue); color: #0d1117;
+      padding: 7px 18px; border-radius: 6px;
+      font-weight: 600; font-size: 0.85rem; text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 860px; margin: 0 auto;
+      padding: 100px 24px 64px;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3);
+      color: var(--blue); border-radius: 100px;
+      padding: 4px 14px; font-size: 0.8rem; font-weight: 500;
+      margin-bottom: 28px;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.4rem);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+    }
+    .hero h1 em { font-style: normal; color: var(--blue); }
+    .hero p {
+      font-size: 1.15rem; color: var(--muted);
+      max-width: 560px; margin: 0 auto 36px;
+    }
+
+    .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn-primary {
+      background: var(--blue); color: #0d1117;
+      padding: 12px 28px; border-radius: 8px;
+      font-weight: 700; font-size: 1rem; text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-ghost {
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border);
+      padding: 12px 28px; border-radius: 8px;
+      font-weight: 600; font-size: 1rem; text-decoration: none;
+      transition: border-color 0.15s;
+    }
+    .btn-ghost:hover { border-color: var(--muted); }
+
+    /* ── Install strip ── */
+    .install-strip {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-width: 500px; margin: 28px auto 0;
+      display: flex; align-items: center;
+      padding: 12px 20px; gap: 12px;
+    }
+    .install-strip .prompt { color: var(--green); font-family: monospace; font-size: 0.9rem; }
+    .install-strip code { font-family: monospace; font-size: 0.9rem; color: var(--text); flex: 1; }
+    .copy-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 4px; padding: 4px 10px; font-size: 0.75rem; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+    /* ── Demo ── */
+    .demo-section {
+      max-width: 900px; margin: 0 auto;
+      padding: 16px 24px 80px;
+    }
+    .demo-window {
+      background: #010409; border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.4);
+    }
+    .demo-titlebar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 12px 16px; display: flex; align-items: center; gap: 8px;
+    }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+    .dot-red    { background: #ff5f57; }
+    .dot-yellow { background: #febc2e; }
+    .dot-green  { background: #28c840; }
+    .demo-titlebar span { font-size: 0.8rem; color: var(--muted); margin-left: 8px; }
+    .demo-window img { width: 100%; display: block; }
+
+    /* ── Proof bar ── */
+    .proof-bar {
+      border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      padding: 20px 24px;
+      display: flex; justify-content: center; gap: 48px; flex-wrap: wrap;
+    }
+    .proof-item { text-align: center; }
+    .proof-number { font-size: 1.8rem; font-weight: 800; color: var(--blue); }
+    .proof-label  { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+    /* ── Sections ── */
+    section { max-width: 1000px; margin: 0 auto; padding: 80px 24px; }
+    .section-eyebrow {
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--blue); margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(1.6rem, 3vw, 2.4rem);
+      font-weight: 800; letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+    .section-sub { font-size: 1.05rem; color: var(--muted); max-width: 520px; }
+
+    /* ── Workflows ── */
+    .workflows { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 48px; }
+    .workflow-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .workflow-card:hover { border-color: var(--blue); }
+    .workflow-icon { font-size: 1.6rem; margin-bottom: 16px; }
+    .workflow-cmd {
+      background: #010409; border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 14px;
+      font-family: monospace; font-size: 0.85rem; color: var(--green);
+      margin-bottom: 16px; display: block;
+    }
+    .workflow-card h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 8px; }
+    .workflow-card p { font-size: 0.9rem; color: var(--muted); line-height: 1.5; }
+    .workflow-steps { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; }
+    .step { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--muted); }
+    .step-icon { font-size: 0.75rem; }
+
+    /* ── How it works ── */
+    .how-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin-top: 48px; align-items: start; }
+    @media (max-width: 700px) { .how-grid { grid-template-columns: 1fr; } }
+    .terminal-block {
+      background: #010409; border: 1px solid var(--border);
+      border-radius: 10px; padding: 24px;
+      font-family: monospace; font-size: 0.82rem; line-height: 1.8;
+    }
+    .t-prompt { color: var(--green); }
+    .t-cmd    { color: var(--text); }
+    .t-stage  { color: var(--muted); }
+    .t-success { color: var(--green); font-weight: 700; }
+    .t-warn   { color: var(--yellow); }
+    .t-retry  { color: var(--blue); }
+
+    .pillars { display: flex; flex-direction: column; gap: 24px; }
+    .pillar { display: flex; gap: 16px; }
+    .pillar-icon {
+      width: 40px; height: 40px; border-radius: 8px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem;
+    }
+    .pillar-icon.blue   { background: rgba(88,166,255,0.12); }
+    .pillar-icon.green  { background: rgba(63,185,80,0.12); }
+    .pillar-icon.yellow { background: rgba(210,153,34,0.12); }
+    .pillar h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 4px; }
+    .pillar p  { font-size: 0.87rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── Trust / safety ── */
+    .trust-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 48px; }
+    .trust-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 24px;
+    }
+    .trust-card .icon { font-size: 1.4rem; margin-bottom: 12px; }
+    .trust-card h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 6px; }
+    .trust-card p  { font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── Quickstart ── */
+    .quickstart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 48px; }
+    @media (max-width: 600px) { .quickstart-grid { grid-template-columns: 1fr; } }
+    .qs-steps { display: flex; flex-direction: column; gap: 20px; }
+    .qs-step { display: flex; gap: 16px; }
+    .qs-num {
+      width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(88,166,255,0.15); border: 1px solid rgba(88,166,255,0.4);
+      color: var(--blue); font-weight: 700; font-size: 0.85rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .qs-step h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 4px; }
+    .qs-step code {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 7px;
+      font-family: monospace; font-size: 0.82rem; color: var(--green);
+    }
+    .qs-step p { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+    /* ── CTA ── */
+    .cta-section {
+      text-align: center;
+      background: linear-gradient(180deg, transparent, rgba(88,166,255,0.05));
+      border-top: 1px solid var(--border);
+      padding: 80px 24px;
+    }
+    .cta-section h2 { font-size: 2rem; font-weight: 800; margin-bottom: 12px; }
+    .cta-section p { color: var(--muted); margin-bottom: 32px; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
+      display: flex; justify-content: center; gap: 32px; flex-wrap: wrap;
+    }
+    footer a { color: var(--muted); text-decoration: none; font-size: 0.85rem; }
+    footer a:hover { color: var(--text); }
+
+    /* ── Misc ── */
+    .tag {
+      display: inline-block; background: rgba(63,185,80,0.1);
+      border: 1px solid rgba(63,185,80,0.3); color: var(--green);
+      border-radius: 100px; padding: 2px 10px; font-size: 0.75rem; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Nav ──────────────────────────────────────────────────────────────── -->
+<nav>
+  <a class="nav-logo" href="#"><span>⚡</span> Koda</a>
+  <div class="nav-links">
+    <a href="#workflows">Workflows</a>
+    <a href="#how">How it works</a>
+    <a href="#safety">Safety</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="https://github.com/varunbiluri/koda">GitHub</a>
+  </div>
+  <a class="nav-cta" href="#quickstart">Get started →</a>
+</nav>
+
+<!-- ── Hero ─────────────────────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="hero-badge">
+    <span>⚡</span> Autonomous AI Engineer — not a copilot
+  </div>
+  <h1>Give Koda a task.<br /><em>Come back to a working diff.</em></h1>
+  <p>
+    Koda fixes bugs, adds features, and refactors code end-to-end —
+    then verifies the result with your tests. It self-corrects when it fails.
+    No hand-holding required.
+  </p>
+  <div class="hero-actions">
+    <a class="btn-primary" href="#quickstart">Install free →</a>
+    <a class="btn-ghost" href="https://github.com/varunbiluri/koda">View on GitHub</a>
+  </div>
+  <div class="install-strip">
+    <span class="prompt">$</span>
+    <code>npm install -g @varunbiluri/koda</code>
+    <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g @varunbilluri/koda').then(()=>this.textContent='✓').catch(()=>{})">Copy</button>
+  </div>
+</div>
+
+<!-- ── Demo ─────────────────────────────────────────────────────────────── -->
+<div class="demo-section">
+  <div class="demo-window">
+    <div class="demo-titlebar">
+      <div class="dot dot-red"></div>
+      <div class="dot dot-yellow"></div>
+      <div class="dot dot-green"></div>
+      <span>koda fix "null pointer in auth middleware"</span>
+    </div>
+    <img src="../assets/demo.gif" alt="Koda demo — fix bug autonomously" loading="lazy" />
+  </div>
+</div>
+
+<!-- ── Proof bar ─────────────────────────────────────────────────────────── -->
+<div class="proof-bar">
+  <div class="proof-item">
+    <div class="proof-number">1 219</div>
+    <div class="proof-label">tests passing</div>
+  </div>
+  <div class="proof-item">
+    <div class="proof-number">3</div>
+    <div class="proof-label">commands to get started</div>
+  </div>
+  <div class="proof-item">
+    <div class="proof-number">&lt; 5 min</div>
+    <div class="proof-label">to complete first task</div>
+  </div>
+  <div class="proof-item">
+    <div class="proof-number">0</div>
+    <div class="proof-label">destructive ops without approval</div>
+  </div>
+</div>
+
+<!-- ── Workflows ─────────────────────────────────────────────────────────── -->
+<section id="workflows">
+  <div class="section-eyebrow">Three core workflows</div>
+  <h2 class="section-title">Everything a junior engineer would do — autonomously</h2>
+  <p class="section-sub">
+    Each workflow runs end-to-end: plan → implement → verify → self-correct.
+    You review the diff and decide.
+  </p>
+
+  <div class="workflows">
+    <div class="workflow-card">
+      <div class="workflow-icon">🐛</div>
+      <code class="workflow-cmd">koda fix "null pointer in auth middleware"</code>
+      <h3>Fix a bug</h3>
+      <p>Describe the bug in plain English. Koda finds the root cause, patches the file, and verifies the fix with your test suite.</p>
+      <div class="workflow-steps">
+        <div class="step"><span class="step-icon">○</span> Root-cause analysis across the codebase</div>
+        <div class="step"><span class="step-icon">○</span> Targeted patch — not a rewrite</div>
+        <div class="step"><span class="step-icon">○</span> Runs tests, self-corrects if they fail</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Verified diff ready to commit</div>
+      </div>
+    </div>
+
+    <div class="workflow-card">
+      <div class="workflow-icon">✨</div>
+      <code class="workflow-cmd">koda add "rate limiting with Redis"</code>
+      <h3>Add a feature</h3>
+      <p>Describe what you need. Koda reads your existing code, matches your patterns, implements the feature, and writes the tests.</p>
+      <div class="workflow-steps">
+        <div class="step"><span class="step-icon">○</span> Analyses existing code patterns</div>
+        <div class="step"><span class="step-icon">○</span> Plans files to create / update</div>
+        <div class="step"><span class="step-icon">○</span> Generates tests automatically</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Build + tests must pass to complete</div>
+      </div>
+    </div>
+
+    <div class="workflow-card">
+      <div class="workflow-icon">🔧</div>
+      <code class="workflow-cmd">koda refactor src/auth/</code>
+      <h3>Refactor a module</h3>
+      <p>Point Koda at a module. It restructures the code, preserves all existing behaviour, and confirms nothing broke.</p>
+      <div class="workflow-steps">
+        <div class="step"><span class="step-icon">○</span> Impact analysis — knows what depends on what</div>
+        <div class="step"><span class="step-icon">○</span> Preserves public API surface</div>
+        <div class="step"><span class="step-icon">○</span> Full test suite must stay green</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Approve each file change individually</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How it works ──────────────────────────────────────────────────────── -->
+<section id="how" style="border-top:1px solid var(--border)">
+  <div class="section-eyebrow">How it works</div>
+  <h2 class="section-title">Executes. Verifies. Self-corrects.</h2>
+  <p class="section-sub">
+    Koda isn't a chatbot that pastes code into your editor. It runs a full
+    execute → verify → fix loop until the task is done or it hits a safety stop.
+  </p>
+
+  <div class="how-grid">
+    <div class="terminal-block">
+<span class="t-prompt">$</span> <span class="t-cmd">koda fix "users can't log in after password reset"</span>
+
+<span style="color:var(--blue);font-weight:700">⚡ Koda — Autonomous Bug Fix</span>
+<span class="t-stage">   users can't log in after password reset</span>
+
+<span style="color:var(--blue)">── Step 1 / 3 ─────────────────────</span>
+<span class="t-stage">   ○ Searching for password reset flow...</span>
+<span class="t-stage">   ○ Found: src/auth/reset-service.ts</span>
+<span class="t-stage">   ○ Root cause: token not invalidated after use</span>
+<span class="t-stage">   ○ Patching src/auth/reset-service.ts</span>
+
+<span class="t-stage">   ○ Verifying — running pnpm test...</span>
+<span class="t-success">   ✓ Fix verified in 1 step</span>
+
+<span class="t-success">✓ Done in 14.2s</span>
+<span class="t-stage">  3/4 tasks completed (75%) · ~1.2h saved</span>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar">
+        <div class="pillar-icon blue">⚡</div>
+        <div>
+          <h4>Execution, not suggestion</h4>
+          <p>Koda writes the code, runs the tests, and gives you a verified diff. It doesn't paste suggestions into a chat window.</p>
+        </div>
+      </div>
+      <div class="pillar">
+        <div class="pillar-icon green">↩</div>
+        <div>
+          <h4>Autonomous self-correction</h4>
+          <p>If tests fail, Koda classifies the error, adjusts its approach, and tries again — up to 3 iterations by default.</p>
+        </div>
+      </div>
+      <div class="pillar">
+        <div class="pillar-icon yellow">◆</div>
+        <div>
+          <h4>Learns from your repo</h4>
+          <p>Every session, Koda records which strategies worked. Future fix attempts in the same repo are smarter.</p>
+        </div>
+      </div>
+      <div class="pillar">
+        <div class="pillar-icon blue">⊕</div>
+        <div>
+          <h4>Impact-aware changes</h4>
+          <p>Before touching a high-dependency file, Koda shows you how many files it affects. You choose to proceed or not.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Trust / Safety ────────────────────────────────────────────────────── -->
+<section id="safety" style="border-top:1px solid var(--border)">
+  <div class="section-eyebrow">Safety model</div>
+  <h2 class="section-title">Autonomous. Not reckless.</h2>
+  <p class="section-sub">
+    Koda has a three-tier permission system. It never runs a destructive operation
+    without your explicit approval — even in autonomous mode.
+  </p>
+
+  <div class="trust-grid">
+    <div class="trust-card">
+      <div class="icon">✅</div>
+      <h4>Read-only auto-approved</h4>
+      <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">read_file</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">search_code</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git_log</code> — never needs your permission. Zero friction for analysis.</p>
+    </div>
+    <div class="trust-card">
+      <div class="icon">🔒</div>
+      <h4>Writes require approval</h4>
+      <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">write_file</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git_commit</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">run_terminal</code> — prompts before every state-changing operation.</p>
+    </div>
+    <div class="trust-card">
+      <div class="icon">🚫</div>
+      <h4>Dangerous ops blocked forever</h4>
+      <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">rm -rf</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git push --force</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">DROP TABLE</code> — unconditionally blocked. Cannot be overridden.</p>
+    </div>
+    <div class="trust-card">
+      <div class="icon">🧪</div>
+      <h4>Verified before done</h4>
+      <p>Koda considers a task complete only after <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">pnpm build</code> and <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">pnpm test</code> both pass. No silent breakage.</p>
+    </div>
+    <div class="trust-card">
+      <div class="icon">📊</div>
+      <h4>Confidence scoring</h4>
+      <p>Koda scores its own confidence (HIGH / MEDIUM / LOW). Low confidence triggers a stop and asks for guidance — not a guess.</p>
+    </div>
+    <div class="trust-card">
+      <div class="icon">💾</div>
+      <h4>Your data stays local</h4>
+      <p>All code, index files, and memory are stored in <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">.koda/</code> in your repo. Nothing leaves your machine without your API key.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Quickstart ────────────────────────────────────────────────────────── -->
+<section id="quickstart" style="border-top:1px solid var(--border)">
+  <div class="section-eyebrow">Quickstart</div>
+  <h2 class="section-title">From install to first fix in under 5 minutes</h2>
+  <p class="section-sub">Works with Node.js, Python, Go, and Rust projects.</p>
+
+  <div class="quickstart-grid">
+    <div class="qs-steps">
+      <div class="qs-step">
+        <div class="qs-num">1</div>
+        <div>
+          <h4>Install Koda</h4>
+          <code>npm install -g @varunbilluri/koda</code>
+          <p>Requires Node.js 18+. No other dependencies.</p>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">2</div>
+        <div>
+          <h4>Index your repo</h4>
+          <code>koda init</code>
+          <p>Koda reads your codebase, detects your stack, and shows you what it found. Takes ~10s for most projects.</p>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">3</div>
+        <div>
+          <h4>Configure your AI provider</h4>
+          <code>koda login</code>
+          <p>Supports Azure AI, OpenAI, Anthropic, and Ollama. Your key stays in <code>.koda/config.json</code>.</p>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">4</div>
+        <div>
+          <h4>Fix your first bug</h4>
+          <code>koda fix "describe the bug"</code>
+          <p>Watch Koda find, patch, and verify the fix end-to-end.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="terminal-block" style="align-self:start">
+<span class="t-prompt">$</span> <span class="t-cmd">npm install -g @varunbilluri/koda</span>
+<span class="t-stage">  added 1 package in 3s</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">cd my-project && koda init</span>
+<span class="t-stage">  ✓ Repository indexed</span>
+<span class="t-stage">    Files: 847  Chunks: 3 421  Deps: 1 204</span>
+<span class="t-stage">  ✓ AGENTS.md generated</span>
+<br/>
+<span style="color:var(--blue);font-weight:700">  Welcome to Koda — your autonomous engineer</span>
+<span class="t-stage">  Runtime:   Node.js</span>
+<span class="t-stage">  Tests:     vitest</span>
+<span class="t-stage">  Files:     847 indexed</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">koda login</span>
+<span class="t-stage">  ✓ Provider configured: Azure (gpt-4o)</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">koda fix "login fails after password reset"</span>
+<span class="t-stage">  ○ Finding root cause...</span>
+<span class="t-stage">  ○ Patching src/auth/reset.ts</span>
+<span class="t-stage">  ○ Verifying...</span>
+<span class="t-success">  ✓ Done in 18.3s</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ───────────────────────────────────────────────────────────────── -->
+<div class="cta-section">
+  <h2>Ready to ship faster?</h2>
+  <p>Koda is free and open source. Give it your hardest bug.</p>
+  <div class="hero-actions" style="margin-bottom:0">
+    <a class="btn-primary" href="https://github.com/varunbiluri/koda">Get Koda on GitHub →</a>
+    <a class="btn-ghost" href="https://github.com/varunbiluri/koda/issues">Report an issue</a>
+  </div>
+</div>
+
+<!-- ── Footer ────────────────────────────────────────────────────────────── -->
+<footer>
+  <a href="https://github.com/varunbiluri/koda">GitHub</a>
+  <a href="https://github.com/varunbiluri/koda/blob/main/CONTRIBUTING.md">Contributing</a>
+  <a href="https://github.com/varunbiluri/koda/blob/main/SECURITY.md">Security</a>
+  <a href="https://github.com/varunbiluri/koda/issues">Issues</a>
+  <a href="https://github.com/varunbiluri/koda/blob/main/LICENSE">ISC License</a>
+</footer>
+
+</body>
+</html>

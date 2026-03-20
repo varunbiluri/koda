@@ -15,7 +15,9 @@ import { ToolRegistry } from '../../tools/tool-registry.js';
 import { detectDependencies } from '../../analysis/dependency-detector.js';
 import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
 import { trimContext } from '../context/context-trimmer.js';
-import { toolResultIndex } from '../../runtime/tool-result-index.js';
+import { contextBudgetManager } from '../context/context-budget-manager.js';
+import { ToolResultIndex } from '../../runtime/tool-result-index.js';
+import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
 import { createProvider } from '../providers/provider-factory.js';
 import { loadConfig } from '../config-store.js';
 
@@ -56,6 +58,8 @@ export class ReasoningEngine {
   private hybrid:        HybridRetrieval | null = null;
   /** Workspace intelligence — loaded asynchronously in chat(). */
   private workspace:     WorkspaceIntelligence | null = null;
+  /** Per-instance tool result cache — isolated between ReasoningEngine instances. */
+  private readonly toolResultIndex = new ToolResultIndex();
 
   /**
    * @param index    - Repository index (may be null when using the chat() path without a pre-built index).
@@ -289,7 +293,7 @@ export class ReasoningEngine {
   async chat(
     input: string,
     context: ChatContext,
-    _history: ChatMessage[], // legacy parameter — intentionally ignored for stateless calls
+    _history: ChatMessage[], // intentionally unused — each call is stateless; context is rebuilt from the repo index per call
     onChunk: (chunk: string) => void,
     onStage?: (message: string) => void,
     onPlan?: (steps: string[]) => void,
@@ -297,6 +301,7 @@ export class ReasoningEngine {
     onToolUsed?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
     chatOptions?: { maxRounds?: number; skipRetrieval?: boolean; retrievalContext?: string; skipPlanning?: boolean },
+    onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
@@ -305,6 +310,8 @@ export class ReasoningEngine {
     const sessionFilesWritten = new Set<string>();
 
     const registry = new ToolRegistry(context.rootPath);
+    // Wire diff-first approval if provided by the caller (e.g. session manager)
+    if (onDiff) registry.onDiff = onDiff;
     const tools = registry.getToolDefinitions();
 
     // ── Step 0: Parallel initialisation ──────────────────────────────────────
@@ -380,18 +387,16 @@ export class ReasoningEngine {
     const workspaceContext = this.workspace?.formatForPrompt(input, 3) ?? '';
 
     // ── Base message thread (stateless: no accumulated history) ───────────────
-    const systemMessage: ChatMessage = [
-      {
-        role: 'system',
-        content: buildChatSystemPrompt(
-          context,
-          relevantContext,
-          agentsMdContent,
-          detectedDeps,
-          workspaceContext,
-        ),
-      },
-    ];
+    const systemMessage: ChatMessage = {
+      role: 'system',
+      content: buildChatSystemPrompt(
+        context,
+        relevantContext,
+        agentsMdContent,
+        detectedDeps,
+        workspaceContext,
+      ),
+    };
 
     // ── Step 2: Planning (Problem 3) ──────────────────────────────────────────
     const isComplexTask =
@@ -537,8 +542,28 @@ export class ReasoningEngine {
             }
           };
 
-          const result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
-          toolCount++;
+          // Normalise args once — used for both cache lookup and storage
+          const argsAsStrings = Object.fromEntries(
+            Object.entries(args).map(([k, v]) => [k, String(v)]),
+          );
+
+          // ── Part 2: Result reuse — check ToolResultIndex before executing ────
+          const cached = this.toolResultIndex.findByToolAndArgs(toolName, argsAsStrings);
+          let result: string;
+          let storedId: string;
+
+          if (cached) {
+            // Cache hit: reuse stored output, skip the actual tool call
+            onStage?.(`INFO CACHE_HIT ${toolName}`);
+            logger.debug(`[reasoning-engine] Cache reuse: ${toolName} → ${cached.id} (saved a tool call)`);
+            result   = cached.output;
+            storedId = cached.id;
+          } else {
+            // Cache miss: execute tool and store result
+            result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
+            toolCount++;
+            storedId = this.toolResultIndex.store('reasoning-engine', toolName, argsAsStrings, result).id;
+          }
 
           // ── Loop detection: stop if last 3 calls to the same tool returned
           //    identical results (indicates a stuck reasoning loop) ────────────
@@ -565,19 +590,32 @@ export class ReasoningEngine {
             ? ` [Hint: ${toolName} has been called ${callCount} times. If you are repeating the same operation without making progress, try a different approach.]`
             : '';
 
-          // Store full tool output in ToolResultIndex and expose only a reference to the LLM.
-          const ref = toolResultIndex.store(
-            'reasoning-engine',
-            toolName,
-            Object.fromEntries(Object.entries(args).map(([k, v]) => [k, String(v)])),
-            result,
-          );
+          // ── Part 1: Hybrid tool result strategy ──────────────────────────────
+          // Small outputs (< 5 000 chars) → inject inline into LLM message history.
+          // Large outputs → send a reference + 500-char preview; full content is
+          // available in ToolResultIndex.  This keeps context windows manageable
+          // when tools return large files, diffs, or test logs.
+          const { INLINE_THRESHOLD } = await import('../../runtime/tool-output-limits.js');
 
-          return {
-            role:        'tool',
-            content:     `Tool result available: ${ref.id} (${toolName}, ${ref.description})${repetitionHint}`,
-            tool_call_id: toolCall.id,
-          };
+          if (result.length < INLINE_THRESHOLD) {
+            return {
+              role:        'tool',
+              content:     result + repetitionHint,
+              tool_call_id: toolCall.id,
+            };
+          } else {
+            const lineCount = result.split('\n').length;
+            const preview   = result.slice(0, 500);
+            return {
+              role:        'tool',
+              content:
+                `[${storedId}] ${toolName} returned ${lineCount} lines (${result.length} chars).\n\n` +
+                `Preview (first 500 chars):\n${preview}\n...\n\n` +
+                `Full output stored as ${storedId}. ` +
+                `Use grep_code or search_code to find specific sections.${repetitionHint}`,
+              tool_call_id: toolCall.id,
+            };
+          }
         };
 
         const indexedCalls = message.tool_calls.map((tc, idx) => ({ tc, idx }));

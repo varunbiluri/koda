@@ -5,6 +5,76 @@ import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
 import type { ExecutionPlan, PlanStep } from '../../ai/reasoning/planning-engine.js';
 import type { ExecutionMetrics } from '../../execution/plan-executor.js';
 
+// ── Simple line-diff utility (no external dependency) ─────────────────────────
+
+/**
+ * Generate a readable unified-style diff between two text blobs.
+ * Uses a common-prefix/suffix heuristic — sufficient for typical file edits.
+ */
+export function simpleDiff(oldText: string, newText: string, filePath = ''): string {
+  if (oldText === newText) return '(no changes)';
+
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+
+  // Common prefix lines
+  let prefixLen = 0;
+  while (
+    prefixLen < oldLines.length &&
+    prefixLen < newLines.length &&
+    oldLines[prefixLen] === newLines[prefixLen]
+  ) prefixLen++;
+
+  // Common suffix lines
+  let suffixLen = 0;
+  while (
+    suffixLen < oldLines.length - prefixLen &&
+    suffixLen < newLines.length - prefixLen &&
+    oldLines[oldLines.length - 1 - suffixLen] === newLines[newLines.length - 1 - suffixLen]
+  ) suffixLen++;
+
+  const CTX   = 2;        // context lines to show around the changed region
+  const MAX_D = 40;       // max diff lines before truncating
+
+  const out: string[] = [];
+  if (filePath) {
+    out.push(chalk.bold(`--- ${filePath}`));
+    out.push(chalk.bold(`+++ ${filePath}`));
+  }
+
+  // Context before
+  const ctxStart = Math.max(0, prefixLen - CTX);
+  for (let k = ctxStart; k < prefixLen; k++) {
+    out.push(chalk.gray(`  ${oldLines[k]}`));
+  }
+
+  // Removed
+  const removeEnd = oldLines.length - suffixLen;
+  let shown = 0;
+  for (let k = prefixLen; k < removeEnd; k++) {
+    if (shown >= MAX_D) { out.push(chalk.gray(`  … ${removeEnd - k} more removed`)); break; }
+    out.push(chalk.red(`- ${oldLines[k]}`));
+    shown++;
+  }
+
+  // Added
+  const addEnd = newLines.length - suffixLen;
+  shown = 0;
+  for (let k = prefixLen; k < addEnd; k++) {
+    if (shown >= MAX_D) { out.push(chalk.gray(`  … ${addEnd - k} more added`)); break; }
+    out.push(chalk.green(`+ ${newLines[k]}`));
+    shown++;
+  }
+
+  // Context after
+  const ctxEnd = Math.min(oldLines.length, removeEnd + CTX);
+  for (let k = removeEnd; k < ctxEnd; k++) {
+    out.push(chalk.gray(`  ${oldLines[k]}`));
+  }
+
+  return out.join('\n');
+}
+
 export interface HeaderContext {
   repoName: string;
   branch: string;
@@ -140,6 +210,96 @@ export class PlanTracker {
   }
 }
 
+// ── DagVisualizer ─────────────────────────────────────────────────────────────
+
+type DagNodeState = 'pending' | 'running' | 'done' | 'failed';
+
+interface DagNodeEntry {
+  id:          string;
+  description: string;
+  state:       DagNodeState;
+  durationMs?: number;
+}
+
+/**
+ * DagVisualizer — live ANSI-rewind display of a DAG execution.
+ *
+ * Shows each node with its current state:
+ *   ●  pending — waiting for dependencies
+ *   →  running — executing now
+ *   ✔  done    — completed successfully  (elapsed time shown)
+ *   ✗  failed  — errored
+ *
+ * Uses the same cursor-rewind technique as PlanTracker so the DAG panel
+ * stays fixed in the terminal without scrolling away.
+ */
+export class DagVisualizer {
+  private nodes:     DagNodeEntry[] = [];
+  private rendered = false;
+  private lineCount = 0;
+
+  setNodes(nodes: Array<{ id: string; description: string }>): void {
+    this.nodes = nodes.map((n) => ({ ...n, state: 'pending' as DagNodeState }));
+    this.rendered = false;
+    this.lineCount = 0;
+    this._render(false);
+  }
+
+  nodeStart(nodeId: string): void {
+    const n = this.nodes.find((x) => x.id === nodeId);
+    if (n) { n.state = 'running'; this._render(true); }
+  }
+
+  nodeDone(nodeId: string, durationMs: number): void {
+    const n = this.nodes.find((x) => x.id === nodeId);
+    if (n) { n.state = 'done'; n.durationMs = durationMs; this._render(true); }
+  }
+
+  nodeFailed(nodeId: string): void {
+    const n = this.nodes.find((x) => x.id === nodeId);
+    if (n) { n.state = 'failed'; this._render(true); }
+  }
+
+  reset(): void {
+    this.nodes     = [];
+    this.rendered  = false;
+    this.lineCount = 0;
+  }
+
+  private _render(rewind: boolean): void {
+    if (rewind && this.lineCount > 0) {
+      process.stdout.write(`\x1B[${this.lineCount}A\x1B[0J`);
+    }
+
+    const lines: string[] = ['', `  ${L.PLAN} Execution DAG`, ''];
+    for (const node of this.nodes) {
+      lines.push(this._formatNode(node));
+    }
+    lines.push('');
+
+    for (const l of lines) console.log(l);
+    this.lineCount = lines.length;
+    this.rendered  = true;
+  }
+
+  private _formatNode(node: DagNodeEntry): string {
+    const desc = node.description.length > 55
+      ? node.description.slice(0, 52) + '…'
+      : node.description;
+    const id = node.id.padEnd(18);
+    const dur = node.durationMs !== undefined
+      ? chalk.gray(` ${(node.durationMs / 1000).toFixed(1)}s`)
+      : '';
+
+    switch (node.state) {
+      case 'pending': return `     ${chalk.gray('●')} ${chalk.gray(id)} ${chalk.gray(desc)}`;
+      case 'running': return `  ${chalk.cyan(' →')} ${chalk.cyan(id)} ${desc}`;
+      case 'done':    return `  ${chalk.green(' ✔')} ${chalk.green(id)} ${chalk.gray(desc)}${dur}`;
+      case 'failed':  return `  ${chalk.red(' ✗')} ${chalk.red(id)} ${chalk.gray(desc)}`;
+    }
+  }
+}
+
 // ── UIRenderer ────────────────────────────────────────────────────────────────
 
 /**
@@ -167,7 +327,8 @@ export class UIRenderer {
   private _tokensUsed = 0;
   private _timeline: Array<{ name: string; durationMs: number }> = [];
 
-  readonly planTracker = new PlanTracker();
+  readonly planTracker  = new PlanTracker();
+  readonly dagVisualizer = new DagVisualizer();
 
   // Called by conversation-engine after each chat() response
   updateContext(files: string[], tokens: number): void {
@@ -201,6 +362,7 @@ export class UIRenderer {
     this._tokensUsed = 0;
     this._timeline = [];
     this.planTracker.reset();
+    this.dagVisualizer.reset();
   }
 
   // ── Header ────────────────────────────────────────────────────────────────
@@ -377,6 +539,89 @@ export class UIRenderer {
    */
   advancePlan(): void {
     this.planTracker.advance();
+  }
+
+  // ── DAG Visualizer API ────────────────────────────────────────────────────
+
+  /** Initialise the live DAG panel with all nodes in pending state. */
+  dagStart(nodes: Array<{ id: string; description: string }>): void {
+    this.dagVisualizer.setNodes(nodes);
+  }
+
+  dagNodeStart(nodeId: string): void {
+    this.dagVisualizer.nodeStart(nodeId);
+  }
+
+  dagNodeDone(nodeId: string, durationMs: number): void {
+    this.dagVisualizer.nodeDone(nodeId, durationMs);
+  }
+
+  dagNodeFailed(nodeId: string): void {
+    this.dagVisualizer.nodeFailed(nodeId);
+  }
+
+  // ── Diff preview ──────────────────────────────────────────────────────────
+
+  /**
+   * Render a diff between old and new content with a header line.
+   * Used before write operations so users can see exactly what will change.
+   */
+  renderDiffPreview(filePath: string, oldContent: string, newContent: string): void {
+    console.log();
+    console.log(`  ${L.WRITE} ${chalk.bold(filePath)}`);
+    console.log();
+    const diff = simpleDiff(oldContent, newContent, filePath);
+    diff.split('\n').forEach((line) => console.log('  ' + line));
+    console.log();
+  }
+
+  // ── Smart input suggestions ───────────────────────────────────────────────
+
+  /**
+   * Show 2–4 contextual action hints above the prompt.
+   * Displayed as: "  → fix the failing test" in gray/cyan.
+   */
+  renderSmartSuggestions(suggestions: string[]): void {
+    if (suggestions.length === 0) return;
+    console.log();
+    for (const s of suggestions) {
+      console.log(`  ${chalk.gray('→')} ${chalk.gray(s)}`);
+    }
+  }
+
+  // ── Unified completion summary ────────────────────────────────────────────
+
+  /**
+   * Render a compact one-line completion summary that works for all three
+   * routing paths (SIMPLE / MEDIUM / COMPLEX).
+   */
+  renderCompletionSummary(opts: {
+    status:     'ok' | 'failed';
+    stepsOrNodes: number;
+    toolCalls:  number;
+    durationMs: number;
+    filesChanged: string[];
+  }): void {
+    const icon    = opts.status === 'ok' ? chalk.green('✔') : chalk.red('✗');
+    const secs    = (opts.durationMs / 1000).toFixed(1) + 's';
+    const steps   = opts.stepsOrNodes;
+    const tools   = opts.toolCalls;
+    const files   = opts.filesChanged.length;
+
+    console.log(
+      `  ${icon} ${chalk.gray(`${steps} step${steps !== 1 ? 's' : ''} · ${tools} tool${tools !== 1 ? 's' : ''} · ${files} file${files !== 1 ? 's' : ''} changed · ${secs}`)}`,
+    );
+
+    if (opts.filesChanged.length > 0) {
+      opts.filesChanged.slice(0, 6).forEach((f) => {
+        console.log(`    ${chalk.gray('•')} ${chalk.cyan(f)}`);
+      });
+      if (opts.filesChanged.length > 6) {
+        console.log(`    ${chalk.gray(`… ${opts.filesChanged.length - 6} more`)}`);
+      }
+    }
+
+    console.log();
   }
 
   /**

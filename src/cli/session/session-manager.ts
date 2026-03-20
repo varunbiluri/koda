@@ -25,8 +25,16 @@ export class SessionManager {
   private rl: readline.Interface | null = null;
   /** Abort controller for the currently-running AI task. */
   private activeAbort: AbortController | null = null;
+  /** Whether the interrupt pause menu is currently showing. */
+  private pauseMenuActive = false;
   /** Header context stored for /clear re-render. */
   private headerCtx: Parameters<UIRenderer['renderHeader']>[0] | null = null;
+  /** Last input from the user — used for "modify plan" replay. */
+  private lastInput = '';
+  /** Tracks files modified in the last task (for smart suggestions). */
+  private lastFilesChanged: string[] = [];
+  /** Last task was a write operation (for smart suggestions). */
+  private lastWasWrite = false;
 
   constructor(ui?: UIRenderer, engine?: ConversationEngine) {
     this.ui = ui ?? new UIRenderer();
@@ -103,17 +111,46 @@ export class SessionManager {
       historySize: 100,
     });
 
-    // ── Ctrl+C: cancel active task or exit ───────────────────────────────────
+    // ── Ctrl+C: pause menu when task is active, else exit ────────────────────
     this.rl.on('SIGINT', () => {
-      if (this.activeAbort) {
-        // Cancel the in-progress AI task and return to prompt
-        this.activeAbort.abort();
-        this.activeAbort = null;
+      if (this.activeAbort && !this.pauseMenuActive) {
+        // Show pause menu without cancelling yet
+        this.pauseMenuActive = true;
+        process.stdout.write('\n\n');
+        console.log(`  ${chalk.bold('Task paused')}  ${chalk.gray('(task is still running)')}`);
         console.log();
-        this.ui.renderInfo('Task cancelled.');
+        console.log(`  ${chalk.cyan('[1]')} ${chalk.white('Resume')}      continue the current task`);
+        console.log(`  ${chalk.cyan('[2]')} ${chalk.white('Cancel')}      stop the task`);
+        console.log(`  ${chalk.cyan('[3]')} ${chalk.white('Modify')}      cancel and enter a revised instruction`);
         console.log();
-        ask();
-      } else {
+        process.stdout.write(chalk.cyan('  > '));
+
+        const resumeListener = (line: string): void => {
+          const choice = line.trim();
+          this.rl?.removeListener('line', resumeListener);
+          this.pauseMenuActive = false;
+
+          if (choice === '2') {
+            this.activeAbort?.abort();
+            this.activeAbort = null;
+            console.log();
+            this.ui.renderInfo('Task cancelled.');
+            console.log();
+            ask();
+          } else if (choice === '3') {
+            this.activeAbort?.abort();
+            this.activeAbort = null;
+            console.log();
+            this.ui.renderInfo('Enter a revised instruction:');
+            ask();
+          } else {
+            // '1' or any other input → resume
+            this.ui.renderInfo('Resuming…');
+          }
+        };
+
+        this.rl?.once('line', resumeListener);
+      } else if (!this.activeAbort && !this.pauseMenuActive) {
         console.log('\n\n  ' + chalk.gray('Goodbye!'));
         this.rl?.close();
         process.exit(0);
@@ -124,6 +161,7 @@ export class SessionManager {
       if ((process.stdout as NodeJS.WriteStream & { _lastChar?: string })._lastChar !== '\n') {
         process.stdout.write('\n');
       }
+      this._renderSuggestions(ctx);
       this.ui.renderPrompt();
     };
 
@@ -148,9 +186,29 @@ export class SessionManager {
       }
 
       // ── AI processing with cancellable AbortController ──────────────────────
+      this.lastInput      = input;
+      this.lastWasWrite   = false;
+      this.lastFilesChanged = [];
       this.activeAbort = new AbortController();
+
+      // ── Diff-first approval callback (Part 2 — Diff-First Editing) ─────────
+      const onDiff = async (filePath: string, oldContent: string, newContent: string): Promise<boolean> => {
+        this.ui.renderDiffPreview(filePath, oldContent, newContent);
+        // Use the permission gate's readline prompt to ask [Y/n/e]
+        const { permissionGate } = await import('../../runtime/permission-gate.js');
+        const approved = await permissionGate.requestApprovalWithDiff(
+          `write ${filePath}`,
+          '', // diff already rendered above via renderDiffPreview
+        );
+        if (approved) {
+          this.lastWasWrite = true;
+          this.lastFilesChanged.push(filePath);
+        }
+        return approved;
+      };
+
       try {
-        const response = await this.engine.process(input, ctx, this.activeAbort.signal);
+        const response = await this.engine.process(input, ctx, this.activeAbort.signal, onDiff);
         if (response.shouldQuit) {
           console.log('\n  ' + chalk.gray('Goodbye!'));
           this.rl?.close();
@@ -444,6 +502,49 @@ export class SessionManager {
         return true;
       }
     }
+  }
+
+  /**
+   * Render contextual action suggestions above the prompt (Part 5 — Smart Input).
+   *
+   * Suggestions are derived from the current session state:
+   *  - If no index:          offer to run `koda init`
+   *  - After a write:        offer git diff / commit
+   *  - Default:              show common action starters
+   */
+  private _renderSuggestions(ctx: ConversationContext): void {
+    const suggestions: string[] = [];
+
+    if (!ctx.index) {
+      suggestions.push('init — index this repository first');
+    } else if (this.lastWasWrite && this.lastFilesChanged.length > 0) {
+      suggestions.push('git status — review pending changes');
+      suggestions.push('run the tests — verify the change');
+    } else if (this.lastInput) {
+      // Offer follow-up actions based on what the user just asked
+      const l = this.lastInput.toLowerCase();
+      if (l.includes('fix') || l.includes('bug')) {
+        suggestions.push('run the tests — verify the fix');
+        suggestions.push('explain the fix — describe what changed');
+      } else if (l.includes('add') || l.includes('implement') || l.includes('create')) {
+        suggestions.push('add tests for the new feature');
+        suggestions.push('explain the implementation');
+      } else if (l.includes('explain') || l.includes('how does')) {
+        suggestions.push('find usages — search for call sites');
+        suggestions.push('add a feature — build on this module');
+      } else {
+        // Generic starters
+        suggestions.push('explain <file or symbol>');
+        suggestions.push('fix <describe a bug>');
+        suggestions.push('add <describe a feature>');
+      }
+    } else {
+      suggestions.push('explain <file or symbol>');
+      suggestions.push('fix <describe a bug>');
+      suggestions.push('add <describe a feature>');
+    }
+
+    this.ui.renderSmartSuggestions(suggestions.slice(0, 3));
   }
 
   stop(): void {
