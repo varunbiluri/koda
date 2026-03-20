@@ -26,11 +26,20 @@ import { createImproveCommand } from './commands/improve.js';
 import { createConfigCommand } from './commands/config.js';
 import { createReviewCommand } from './commands/review.js';
 import { createTestGenCommand } from './commands/test-gen.js';
+import { createAutoCommand } from './commands/auto.js';
+import { createAddCommand } from './commands/add.js';
+import { createFeedbackCommand } from './commands/feedback.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
     .version(VERSION)
-    .description('Koda — AI software engineer for your codebase');
+    .description('Koda — Autonomous AI engineer for your codebase');
+
+  // ── Core developer workflows (product mission) ────────────────────────────
+  program.addCommand(fixCommand);          // koda fix  "<bug>"
+  program.addCommand(createAddCommand());  // koda add  "<feature>"
+  program.addCommand(refactorCommand);     // koda refactor <module>
+  program.addCommand(createAutoCommand()); // koda auto "<task>"  (general autonomous)
 
   // Phase 1: Indexing
   program.addCommand(initCommand);
@@ -44,8 +53,6 @@ export function createProgram(): Command {
 
   // Phase 3: Multi-Agent Execution
   program.addCommand(buildCommand);
-  program.addCommand(fixCommand);
-  program.addCommand(refactorCommand);
 
   // Phase 4: Self-Improvement & Observability
   program.addCommand(createDoctorCommand());
@@ -74,6 +81,9 @@ export function createProgram(): Command {
   // Phase 10: Autonomous Engineering System
   program.addCommand(createReviewCommand());
   program.addCommand(createTestGenCommand());
+
+  // Launch — feedback loop
+  program.addCommand(createFeedbackCommand());
 
   // Interactive mode
   program.addCommand(replCommand);

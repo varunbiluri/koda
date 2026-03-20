@@ -37,6 +37,8 @@ import { failureAnalyzer } from './failure-analyzer.js';
 import { ExecutionStateStore } from '../runtime/execution-state-store.js';
 import { ToolResultIndex } from '../runtime/tool-result-index.js';
 import { contextBudgetManager } from '../ai/context/context-budget-manager.js';
+import { backoffDelayMs, sleep } from './retry-policy.js';
+import { LearningLoop } from '../intelligence/learning-loop.js';
 import { logger } from '../utils/logger.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -84,6 +86,8 @@ export interface SchedulerResult {
   failedNodes: string[];
   /** Total tool calls across all nodes. */
   totalToolCalls: number;
+  /** Total retry attempts across all nodes (0 when every node succeeded first try). */
+  retries: number;
 }
 
 // ── GraphScheduler ────────────────────────────────────────────────────────────
@@ -91,8 +95,16 @@ export interface SchedulerResult {
 export class GraphScheduler {
   private readonly stateStore:      ExecutionStateStore;
   private readonly toolResultIndex: ToolResultIndex;
-  private lastSaveTime = 0;
-  private totalToolCalls = 0;
+  private lastSaveTime    = 0;
+  private totalToolCalls  = 0;
+  private totalRetries    = 0;
+  /** Lazily-loaded LearningLoop — null until first retry. */
+  private learner: LearningLoop | null = null;
+  /**
+   * Per-node backoff delays (ms) to apply before the next execution attempt.
+   * Set in the failure handler when a node transitions to 'retrying'.
+   */
+  private readonly pendingBackoffs = new Map<string, number>();
 
   constructor(
     private readonly provider:    AIProvider,
@@ -140,16 +152,22 @@ export class GraphScheduler {
       const toStart = runnable.slice(0, Math.max(0, freeSlots));
 
       for (const node of toStart) {
-        logger.debug(`[graph-scheduler] ▷ Node start: ${node.id} (${node.type}/${node.agentRole})`);
+        // Consume any pending backoff registered by a previous failure
+        const backoffMs = this.pendingBackoffs.get(node.id) ?? 0;
+        this.pendingBackoffs.delete(node.id);
+
+        logger.info(`[graph-scheduler] NODE_START id=${node.id} type=${node.type} role=${node.agentRole}${backoffMs > 0 ? ` backoff=${backoffMs}ms` : ''}`);
         opts.onNodeStart?.(node);
         graph.markRunning(node.id);
 
-        const nodePromise = this._executeNode(graph, node, opts)
+        // Delay node launch if a backoff was registered (exponential retry backoff)
+        const nodePromise = (backoffMs > 0 ? sleep(backoffMs) : Promise.resolve())
+          .then(() => this._executeNode(graph, node, opts))
           .then((result) => {
             graph.markCompleted(node.id, result);
             running.delete(node.id);
             this.totalToolCalls += result.toolCallCount;
-            logger.debug(`[graph-scheduler] ✓ Node complete: ${node.id} (${result.durationMs}ms, ${result.toolCallCount} tools)`);
+            logger.info(`[graph-scheduler] NODE_COMPLETE id=${node.id} duration=${result.durationMs}ms tools=${result.toolCallCount}`);
             opts.onNodeComplete?.(node, result);
             void this._maybeSave(graph);
           })
@@ -159,11 +177,15 @@ export class GraphScheduler {
             running.delete(node.id);
 
             if (node.state === 'retrying') {
-              logger.debug(`[graph-scheduler] ↻ Node retry: ${node.id} (attempt ${node.retryCount})`);
+              // Register exponential backoff for the next attempt
+              const delay = backoffDelayMs(node.retryCount);
+              this.pendingBackoffs.set(node.id, delay);
+              this.totalRetries++;
+              logger.info(`[graph-scheduler] RETRY id=${node.id} attempt=${node.retryCount} backoff=${delay}ms error="${msg.slice(0, 80)}"`);
               opts.onRetry?.(node, node.retryCount);
             } else {
-              // state = 'failed'
-              logger.warn(`[graph-scheduler] ✗ Node failed: ${node.id} — ${msg.slice(0, 120)}`);
+              // Terminal failure — state = 'failed'
+              logger.warn(`[graph-scheduler] NODE_FAILED id=${node.id} error="${msg.slice(0, 120)}"`);
               opts.onNodeFailed?.(node, msg);
               // Insert recovery node for classifiable failures
               const recoveryId = this._insertRecoveryNode(graph, node, msg);
@@ -197,12 +219,14 @@ export class GraphScheduler {
       durationMs:     Date.now() - start,
       failedNodes:    graph.getAllNodes().filter((n) => n.state === 'failed').map((n) => n.id),
       totalToolCalls: this.totalToolCalls,
+      retries:        this.totalRetries,
     };
 
-    logger.debug(
-      `[graph-scheduler] ■ Graph done: ${stats.completed} completed, ` +
-      `${stats.failed} failed, ${(result.durationMs / 1000).toFixed(1)}s, ` +
-      `${this.totalToolCalls} total tool calls`,
+    logger.info(
+      `[graph-scheduler] GRAPH_DONE id=${graph.graphId} ` +
+      `completed=${stats.completed} failed=${stats.failed} ` +
+      `retries=${this.totalRetries} duration=${(result.durationMs / 1000).toFixed(1)}s ` +
+      `tools=${this.totalToolCalls}`,
     );
 
     return result;
@@ -228,6 +252,9 @@ export class GraphScheduler {
     let   output         = '';
     let   toolCallCount  = 0;
     const filesModified: string[] = [];
+
+    // Load learning data lazily (only needed for retry nodes)
+    if (node.retryCount > 0) await this._loadLearner();
 
     // Build the isolated node prompt
     const prompt = this._buildNodePrompt(graph, node);
@@ -268,6 +295,9 @@ export class GraphScheduler {
         maxRounds:        node.context.maxRounds ?? DEFAULT_MAX_ROUNDS,
         skipRetrieval:    !!node.context.repoContext,
         retrievalContext: node.context.repoContext ?? '',
+        // Graph nodes are already the output of the planning phase —
+        // suppress the redundant in-chat planning LLM call to save tokens.
+        skipPlanning:     true,
       },
     );
 
@@ -342,11 +372,18 @@ export class GraphScheduler {
 
     // ── Retry context ────────────────────────────────────────────────────────
     if (node.retryCount > 0 && node.error) {
+      const analysis  = failureAnalyzer.classify(node.error);
+      const strategy  = this._getAlternativeStrategy(analysis.type);
       lines.push('');
-      lines.push(`## Retry attempt ${node.retryCount}`);
+      lines.push(`## Retry attempt ${node.retryCount} (${analysis.type})`);
       lines.push('Previous attempt failed with:');
       lines.push(node.error.slice(0, 500));
-      lines.push('Do not repeat the same approach — try a different strategy.');
+      lines.push('');
+      lines.push(`**Alternative strategy for this retry:** ${strategy}`);
+      // Inject LearningLoop hint if available
+      const learnHint = this.learner?.formatHint(analysis.type);
+      if (learnHint) lines.push(learnHint);
+      lines.push('Do not repeat the same approach — apply the strategy above.');
     }
 
     // ── Context safety footer ────────────────────────────────────────────────
@@ -355,6 +392,44 @@ export class GraphScheduler {
     lines.push('Keep your response concise. Use tool references instead of quoting large file contents inline.');
 
     return lines.join('\n');
+  }
+
+  // ── Private: intelligent retry strategy ───────────────────────────────────
+
+  /**
+   * Return a targeted strategy hint for a retry attempt, based on failure type.
+   * Prefers historically-successful strategies from LearningLoop when available;
+   * falls back to hardcoded defaults otherwise.
+   */
+  private _getAlternativeStrategy(failureType: string): string {
+    // Check LearningLoop for empirically-validated strategies
+    const learned = this.learner?.getBestStrategy(failureType);
+    if (learned) return `[Learned strategy — ${Math.round((this.learner!.getStrategies(failureType)[0]?.winRate ?? 0) * 100)}% success rate] ${learned}`;
+
+    switch (failureType) {
+      case 'compile_error':
+        return 'Run `tsc --noEmit` first to get the full error list, then fix each error individually before writing any code.';
+      case 'missing_dep':
+        return 'Use grep_code to confirm the exact export name and file path before importing. Check package.json for available packages.';
+      case 'test_failure':
+        return 'Read the test file carefully to understand expected behavior, then fix the implementation rather than the tests.';
+      case 'runtime_error':
+        return 'Add null/undefined guards before accessing nested properties. Read the stack trace to identify the exact line.';
+      case 'logic_bug':
+        return 'Re-read ALL files modified in the previous attempt. Trace the data flow from input to output to find the incorrect assumption.';
+      default:
+        return 'Start by re-reading the relevant files to get a fresh understanding before making any changes.';
+    }
+  }
+
+  /** Load the LearningLoop lazily (only when a retry is needed). */
+  private async _loadLearner(): Promise<void> {
+    if (this.learner) return;
+    try {
+      this.learner = await LearningLoop.load(this.chatContext.rootPath);
+    } catch {
+      // non-fatal — learning is optional
+    }
   }
 
   // ── Private: recovery ─────────────────────────────────────────────────────

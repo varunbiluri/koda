@@ -4,14 +4,18 @@ import chalk from 'chalk';
 import { runIndexingPipeline } from '../../engine/indexing-pipeline.js';
 import { ArchitectureAgentMd } from '../../agents/architecture-agent.js';
 import { handleCliError } from '../errors.js';
+import { OnboardingWizard } from '../../onboarding/onboarding-wizard.js';
+import { ProductMetrics } from '../../product/metrics.js';
 
 export const initCommand = new Command('init')
   .description('Index the current repository')
   .option('-f, --force', 'Force full re-index', false)
   .action(async (options: { force: boolean }) => {
-    const spinner = ora('Indexing repository...').start();
+    const rootPath   = process.cwd();
+    const isFirst    = await OnboardingWizard.isFirstRun(rootPath);
+    const spinner    = ora('Indexing repository...').start();
+
     try {
-      const rootPath = process.cwd();
       const result = await runIndexingPipeline(rootPath, {
         force: options.force,
         onProgress(stage: string) {
@@ -20,8 +24,8 @@ export const initCommand = new Command('init')
       });
 
       spinner.succeed(chalk.green('Repository indexed'));
-      console.log(`  Files: ${result.metadata.fileCount}`);
-      console.log(`  Chunks: ${result.metadata.chunkCount}`);
+      console.log(`  Files:        ${result.metadata.fileCount}`);
+      console.log(`  Chunks:       ${result.metadata.chunkCount}`);
       console.log(`  Dependencies: ${result.metadata.edgeCount}`);
 
       if (result.warnings.length > 0) {
@@ -48,6 +52,23 @@ export const initCommand = new Command('init')
         analyzeSpinner.fail(chalk.yellow('Architecture analysis failed (non-critical)'));
         console.log(chalk.gray(`  ${(analyzeErr as Error).message}`));
       }
+
+      // ── First-run onboarding wizard ─────────────────────────────────────────
+      if (isFirst) {
+        const wizard  = new OnboardingWizard(rootPath);
+        const profile = await wizard.detectProfile(result.metadata.fileCount);
+        await wizard.printWelcome(profile);
+        await OnboardingWizard.markOnboarded(rootPath);
+      } else {
+        // Returning user: show brief metrics
+        try {
+          const metrics = await ProductMetrics.load(rootPath);
+          const oneliner = metrics.formatOneLiner();
+          if (oneliner) console.log(chalk.gray(`\n  ${oneliner}`));
+        } catch { /* non-fatal */ }
+        console.log(chalk.gray('\n  Ready. Run `koda fix`, `koda add`, or `koda ask`.\n'));
+      }
+
     } catch (err) {
       spinner.fail('Indexing failed');
       handleCliError(err);

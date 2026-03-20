@@ -125,8 +125,11 @@ const BASE_CTX = {
 
 // ── 1. Conversation memory ────────────────────────────────────────────────────
 
-describe('ReasoningEngine.chat() — conversation memory', () => {
-  it('includes previous messages in the request on second call', async () => {
+describe('ReasoningEngine.chat() — stateless call model', () => {
+  it('each call is stateless: only system + user in request regardless of history param', async () => {
+    // ReasoningEngine.chat() is explicitly stateless — the _history parameter is
+    // accepted for API compatibility but intentionally ignored. Context is rebuilt
+    // from the repo index on every call. There is no cross-call memory.
     const { ReasoningEngine } = await import('../../../src/ai/reasoning/reasoning-engine.js');
     const provider = makeProvider();
     const engine = new ReasoningEngine(null, provider);
@@ -139,20 +142,20 @@ describe('ReasoningEngine.chat() — conversation memory', () => {
 
     await engine.chat('brief summary', BASE_CTX, history, vi.fn());
 
-    // 'brief summary' is not a complex task → only 1 sendChatCompletion call (tool loop)
     const callMessages: Array<{ role: string; content: string }> =
       provider.sendChatCompletion.mock.calls[0][0].messages;
 
+    // System prompt must always be a plain object with role='system'
     expect(callMessages[0].role).toBe('system');
+    expect(typeof callMessages[0].content).toBe('string');
+
     const roles = callMessages.map((m) => m.role);
     expect(roles).toContain('user');
-    expect(roles).toContain('assistant');
-    // history messages must appear in the request
-    const contents = callMessages.map(m => m.content).filter(Boolean).join(' ');
-    expect(contents).toContain('create varun.md');
+    // History is intentionally NOT included — stateless design
+    expect(roles).not.toContain('assistant');
   });
 
-  it('limits history to 20 messages (no overflow)', async () => {
+  it('large history param does not inflate the request (history is ignored)', async () => {
     const { ReasoningEngine } = await import('../../../src/ai/reasoning/reasoning-engine.js');
     const provider = makeProvider();
     const engine = new ReasoningEngine(null, provider);
@@ -164,10 +167,9 @@ describe('ReasoningEngine.chat() — conversation memory', () => {
 
     await engine.chat('latest question', BASE_CTX, bigHistory, vi.fn());
 
-    // 'latest question' has no action verb → no planning call → calls[0] is the tool loop call
+    // History is ignored → messages = [system, user] + any tool rounds = small
     const callMessages: unknown[] = provider.sendChatCompletion.mock.calls[0][0].messages;
-    // system prompt (1) + up to 20 history entries = max 21
-    expect(callMessages.length).toBeLessThanOrEqual(21);
+    expect(callMessages.length).toBeLessThanOrEqual(5); // system + user + at most a few tool rounds
   });
 
   it('empty history works (first message in session)', async () => {
@@ -376,6 +378,10 @@ describe('ToolRegistry.execute() — detailed stage messages', () => {
   });
 
   it('write_file emits "WRITE <path> (N lines)"', async () => {
+    // write_file is in WRITE_ASK_PATTERNS — requires session trust in non-TTY environments.
+    const { permissionGate } = await import('../../../src/runtime/permission-gate.js');
+    permissionGate.grantSessionTrust();
+
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
     const stages: string[] = [];
@@ -467,28 +473,30 @@ describe('ConversationEngine — history accumulation', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  it('second call receives history with prior user+assistant turns', async () => {
+  it('each call is independent: no cross-turn state leaks between calls', async () => {
+    // ConversationEngine is stateless — it no longer accumulates history between turns.
+    // Each process() call starts fresh. This prevents fake "memory" where UI shows
+    // continuity that the LLM never actually has.
     const { ConversationEngine } = await import('../../../src/cli/session/conversation-engine.js');
 
     const ui = makeUI();
     const engine = new ConversationEngine(ui);
     const ctx = { rootPath: '/repo', index: null, hasConfig: true, branch: 'main' };
 
-    // First turn: 'create varun.md' is complex (action verb) → planning + tool loop
     await engine.process('create varun.md', ctx);
-    // Second turn: 'brief summary' is NOT complex → no planning → just tool loop
     await engine.process('brief summary', ctx);
 
-    // The last sendChatCompletion call should have messages that include
-    // both 'create varun.md' (from first turn) and 'brief summary' (from second turn)
     const allCalls = mockSendChatCompletion.mock.calls;
     expect(allCalls.length).toBeGreaterThanOrEqual(2);
 
+    // The last call should contain only the current turn ('brief summary'),
+    // NOT prior turn content ('create varun.md') — stateless by design.
     const lastMessages: Array<{ role: string; content: string | null }> =
       allCalls[allCalls.length - 1][0].messages;
     const allContent = lastMessages.map(m => m.content ?? '').join(' ');
 
-    expect(allContent).toContain('create varun.md');
     expect(allContent).toContain('brief summary');
+    // Prior turn does NOT appear — each call is independent
+    expect(allContent).not.toContain('create varun.md');
   });
 });

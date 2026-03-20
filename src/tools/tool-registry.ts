@@ -3,12 +3,16 @@ import { readFile, writeFile, searchCode, listFiles } from './filesystem-tools.j
 import { gitBranch, gitStatus, gitDiff, gitLog, gitAdd, gitCommit, gitPush, gitCreatePr, createKodaCommit } from './git-tools.js';
 import { applyPatch } from './patch-tools.js';
 import { fetchUrl } from './web-tools.js';
-import { replaceText, insertAfterPattern } from './diff-tools.js';
+// diff-tools (replaceText, insertAfterPattern) removed from LLM schema — use edit_file instead
 import { editFile } from './edit-file.js';
 import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
-import { TOOL_OUTPUT_LIMITS, truncateOutput } from '../runtime/tool-output-limits.js';
+import { TOOL_LIMITS } from '../runtime/tool-output-limits.js';
+import { permissionGate, PermissionLevel } from '../runtime/permission-gate.js';
+import { simpleDiff } from '../cli/session/ui-renderer.js';
+import { logger } from '../utils/logger.js';
 import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
 
 
 /**
@@ -22,6 +26,13 @@ import * as path from 'node:path';
 export class ToolRegistry {
   private sandbox:  SandboxManager;
   private explorer: RepoExplorer;
+  /**
+   * Optional diff-first approval callback.  When set, write_file and edit_file
+   * call this before applying the write so the caller can show a diff and prompt
+   * the user for confirmation.  If not set, the permission-gate's built-in
+   * readline prompt is used as a fallback.
+   */
+  onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>;
 
   constructor(private rootPath: string) {
     this.sandbox  = new SandboxManager(rootPath);
@@ -357,60 +368,6 @@ export class ToolRegistry {
       {
         type: 'function',
         function: {
-          name: 'replace_text',
-          description:
-            '[DEPRECATED — prefer edit_file which enforces uniqueness] ' +
-            'Replace the first occurrence of a specific text string in a file.',
-          parameters: {
-            type: 'object',
-            properties: {
-              filePath: {
-                type: 'string',
-                description: 'Absolute or repository-relative file path.',
-              },
-              oldText: {
-                type: 'string',
-                description: 'Exact text to find and replace.',
-              },
-              newText: {
-                type: 'string',
-                description: 'Replacement text.',
-              },
-            },
-            required: ['filePath', 'oldText', 'newText'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'insert_after_pattern',
-          description:
-            '[DEPRECATED — prefer edit_file] ' +
-            'Insert a block of text immediately after the first line that matches a given regex pattern in a file.',
-          parameters: {
-            type: 'object',
-            properties: {
-              filePath: {
-                type: 'string',
-                description: 'Absolute or repository-relative file path.',
-              },
-              pattern: {
-                type: 'string',
-                description: 'Regex pattern to match a line (first match wins).',
-              },
-              text: {
-                type: 'string',
-                description: 'Text to insert after the matched line.',
-              },
-            },
-            required: ['filePath', 'pattern', 'text'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
           name: 'search_files',
           description:
             'Find files whose paths match a glob pattern (e.g. "src/**/*.ts", "tests/**/auth*"). ' +
@@ -488,6 +445,10 @@ export class ToolRegistry {
    *                    label format: "READ src/auth.ts", "SEARCH \"query\"", etc.
    * @param onTiming  - Optional callback with (toolName, durationMs) after each call.
    *                    Used by the caller to build an execution timeline.
+   * @param onDiff    - Optional callback invoked before write_file / edit_file writes.
+   *                    Receives (filePath, oldContent, newContent) and returns true to
+   *                    proceed or false to cancel.  When omitted the write proceeds without
+   *                    showing a diff (useful in tests and non-interactive flows).
    */
   async execute(
     name: string,
@@ -495,12 +456,41 @@ export class ToolRegistry {
     onStage?: (message: string) => void,
     onTiming?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
+    onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<string> {
     const t0 = Date.now();
     const done = (result: string): string => {
       onTiming?.(name, Date.now() - t0);
       return result;
     };
+
+    // Prefer explicit arg, fall back to instance-level callback
+    const diffApprover = onDiff ?? this.onDiff;
+
+    // Write/edit tools handle their own diff-first approval flow below.
+    // All other tools go through the standard permission gate at the top.
+    const WRITE_TOOLS = new Set([
+      'write_file', 'edit_file', 'apply_patch',
+      'git_add', 'git_commit', 'git_push', 'git_create_pr', 'koda_commit',
+    ]);
+
+    // ── Permission gate: every tool call must pass through the gate ───────────
+    const decision = permissionGate.check(name);
+    logger.info(`[tool-registry] PERMISSION tool=${name} decision=${decision}`);
+
+    if (decision === PermissionLevel.DENY) {
+      return done(`Error: Tool "${name}" is blocked by security policy (DENY)`);
+    }
+
+    if (decision === PermissionLevel.ASK && !WRITE_TOOLS.has(name)) {
+      // Non-write ASK tools (run_terminal) — standard gate
+      const approved = await permissionGate.requestApproval(name);
+      if (!approved) {
+        return done(`Error: Tool "${name}" was not approved — operation cancelled`);
+      }
+    }
+    // Write tools request approval later (after diff is generated).
+    // ── End permission gate ───────────────────────────────────────────────────
 
     switch (name) {
       case 'read_file': {
@@ -509,9 +499,9 @@ export class ToolRegistry {
         const result = await readFile(filePath, this.rootPath);
         if (!result.success) return done(`Error: ${result.error}`);
         const content = result.data ?? '';
-        return done(
-          truncateOutput(content, TOOL_OUTPUT_LIMITS.READ_FILE, 'use grep_code for targeted search'),
-        );
+        // Tools are unbounded; full output is available to ToolResultIndex.
+        // LLM sees only compact references built elsewhere.
+        return done(content);
       }
 
       case 'search_code': {
@@ -552,7 +542,7 @@ export class ToolRegistry {
         onStage?.('GIT diff');
         const result = await gitDiff(this.rootPath);
         if (!result.success) return done(`Error: ${result.error}`);
-        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.GIT_DIFF, 'use grep_code or read_file for specific sections'));
+        return done(result.data ?? '');
       }
 
       case 'git_log': {
@@ -570,7 +560,7 @@ export class ToolRegistry {
           const detail = result.stderr?.trim() || result.stdout?.trim() || 'non-zero exit';
           return done(`Error (exit ${result.exitCode}): ${detail}`);
         }
-        return done(truncateOutput(result.stdout ?? '', TOOL_OUTPUT_LIMITS.RUN_TERMINAL, 'check exit code or redirect output'));
+        return done(result.stdout ?? '');
       }
 
       case 'write_file': {
@@ -580,6 +570,35 @@ export class ToolRegistry {
         const content = String(args['content'] ?? '');
         const lineCount = content.split('\n').length;
         onStage?.(`WRITE ${filePath} (${lineCount} lines)`);
+
+        // ── Diff-first approval ─────────────────────────────────────────────
+        let oldContent = '';
+        try {
+          const abs = path.resolve(this.rootPath, filePath);
+          oldContent = await fs.readFile(abs, 'utf8');
+        } catch {
+          // New file — oldContent stays ''
+        }
+
+        if (diffApprover) {
+          // Caller (session manager) shows the diff and prompts [Y/n]
+          const approved = await diffApprover(filePath, oldContent, content);
+          if (!approved) {
+            return done(`Write cancelled — user rejected changes to ${filePath}`);
+          }
+        } else if (decision === PermissionLevel.ASK) {
+          // No diffApprover callback: fall back to standard diff-aware gate
+          const diff = simpleDiff(oldContent, content, filePath);
+          const approved = await permissionGate.requestApprovalWithDiff(
+            `write_file: ${filePath}`,
+            diff,
+          );
+          if (!approved) {
+            return done(`Write cancelled — user rejected changes to ${filePath}`);
+          }
+        }
+        // ── End diff-first approval ──────────────────────────────────────────
+
         const result = await writeFile(filePath, content, this.rootPath);
         if (!result.success) return done(`Error: ${result.error}`);
         // Self-verification: return first 20 lines so model can confirm the write
@@ -596,6 +615,25 @@ export class ToolRegistry {
         const oldString = String(args['old_string'] ?? '');
         const newString = String(args['new_string'] ?? '');
         onStage?.(`WRITE ${filePath} (edit)`);
+
+        // ── Diff-first approval ─────────────────────────────────────────────
+        if (diffApprover) {
+          const approved = await diffApprover(filePath, oldString, newString);
+          if (!approved) {
+            return done(`Edit cancelled — user rejected changes to ${filePath}`);
+          }
+        } else if (decision === PermissionLevel.ASK) {
+          const diff = simpleDiff(oldString, newString, filePath);
+          const approved = await permissionGate.requestApprovalWithDiff(
+            `edit_file: ${filePath}`,
+            diff,
+          );
+          if (!approved) {
+            return done(`Edit cancelled — user rejected changes to ${filePath}`);
+          }
+        }
+        // ── End diff-first approval ──────────────────────────────────────────
+
         try {
           const result = await editFile(filePath, oldString, newString, this.rootPath);
           return done(
@@ -608,6 +646,11 @@ export class ToolRegistry {
       }
 
       case 'apply_patch': {
+        // Standard ASK approval (no diff preview for patch — it already has explicit line range)
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('apply_patch');
+          if (!approved) return done(`Error: Tool "apply_patch" was not approved — operation cancelled`);
+        }
         const filePath = String(args['filePath'] ?? '');
         const pathErr = this.assertPathSafe(filePath);
         if (pathErr) return done(pathErr);
@@ -622,6 +665,10 @@ export class ToolRegistry {
       }
 
       case 'git_add': {
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('git_add');
+          if (!approved) return done(`Error: Tool "git_add" was not approved — operation cancelled`);
+        }
         const files = Array.isArray(args['files']) ? (args['files'] as string[]) : [];
         onStage?.(`GIT add ${files.join(' ')}`);
         const errors: string[] = [];
@@ -637,6 +684,10 @@ export class ToolRegistry {
       }
 
       case 'git_commit': {
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('git_commit');
+          if (!approved) return done(`Error: Tool "git_commit" was not approved — operation cancelled`);
+        }
         const message = String(args['message'] ?? '');
         onStage?.(`GIT commit "${message.slice(0, 50)}${message.length > 50 ? '…' : ''}"`);
         const result = await gitCommit(message, this.rootPath);
@@ -644,6 +695,10 @@ export class ToolRegistry {
       }
 
       case 'git_push': {
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('git_push');
+          if (!approved) return done(`Error: Tool "git_push" was not approved — operation cancelled`);
+        }
         const branch = String(args['branch'] ?? '');
         onStage?.(`GIT push origin ${branch}`);
         const result = await gitPush(branch, this.rootPath);
@@ -651,6 +706,10 @@ export class ToolRegistry {
       }
 
       case 'git_create_pr': {
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('git_create_pr');
+          if (!approved) return done(`Error: Tool "git_create_pr" was not approved — operation cancelled`);
+        }
         const title = String(args['title'] ?? '');
         onStage?.(`GIT create-pr "${title.slice(0, 50)}${title.length > 50 ? '…' : ''}"`);
         const body = String(args['body'] ?? '');
@@ -664,10 +723,14 @@ export class ToolRegistry {
         onStage?.(`FETCH ${display}`);
         const result = await fetchUrl(url);
         if (!result.success) return done(`Error: ${result.error}`);
-        return done(truncateOutput(result.data ?? '', TOOL_OUTPUT_LIMITS.FETCH_URL, 'fetch a more specific URL or section'));
+        return done(result.data ?? '');
       }
 
       case 'koda_commit': {
+        if (decision === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval('koda_commit');
+          if (!approved) return done(`Error: Tool "koda_commit" was not approved — operation cancelled`);
+        }
         const message = String(args['message'] ?? '');
         const rawFiles = Array.isArray(args['files']) ? (args['files'] as string[]) : ['.'];
         // Guard each explicitly listed file (skip '.' which stages all changes)
@@ -680,36 +743,6 @@ export class ToolRegistry {
         const result = await createKodaCommit(message, this.rootPath, rawFiles);
         if (!result.success) return done(`Error: ${result.error}`);
         return done(`Committed ${result.data!.hash} — ${message}\nCo-authored-by: Koda AI`);
-      }
-
-      case 'replace_text': {
-        const filePath = String(args['filePath'] ?? '');
-        const pathErr = this.assertPathSafe(filePath);
-        if (pathErr) return done(pathErr);
-        onStage?.(`WRITE ${filePath} (replace text)`);
-        const oldText = String(args['oldText'] ?? '');
-        const newText = String(args['newText'] ?? '');
-        const absPath = path.resolve(this.rootPath, filePath);
-        try {
-          return done(await replaceText(absPath, oldText, newText));
-        } catch (err) {
-          return done(`Error: ${(err as Error).message}`);
-        }
-      }
-
-      case 'insert_after_pattern': {
-        const filePath = String(args['filePath'] ?? '');
-        const pathErr = this.assertPathSafe(filePath);
-        if (pathErr) return done(pathErr);
-        const pattern = String(args['pattern'] ?? '');
-        onStage?.(`WRITE ${filePath} (insert after /${pattern}/)`);
-        const text = String(args['text'] ?? '');
-        const absPath = path.resolve(this.rootPath, filePath);
-        try {
-          return done(await insertAfterPattern(absPath, pattern, text));
-        } catch (err) {
-          return done(`Error: ${(err as Error).message}`);
-        }
       }
 
       case 'search_files': {
@@ -732,7 +765,7 @@ export class ToolRegistry {
           const matches = await this.explorer.grepCode(query, fileGlob);
           if (matches.length === 0) return done('No matches found.');
           const raw = matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n');
-          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.GREP_CODE, 'narrow the query or use file_glob'));
+          return done(raw);
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }
@@ -751,7 +784,7 @@ export class ToolRegistry {
               return `${e.name}${size}`;
             })
             .join('\n');
-          return done(truncateOutput(raw, TOOL_OUTPUT_LIMITS.LIST_DIRECTORY, 'use search_files for deeper exploration'));
+          return done(raw);
         } catch (err) {
           return done(`Error: ${(err as Error).message}`);
         }

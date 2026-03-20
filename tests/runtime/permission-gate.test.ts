@@ -129,8 +129,17 @@ describe('PermissionGate.requestApproval()', () => {
     expect(result).toBe(true);
   });
 
-  it('auto-approves ASK operations in non-TTY mode', async () => {
+  it('denies write/git ASK operations in non-TTY mode (no auto-approval for mutations)', async () => {
+    // write_file is in WRITE_ASK_PATTERNS — must be denied in non-TTY to prevent
+    // silent file mutations in CI pipelines without explicit user trust.
     const result = await gate.requestApproval('write_file');
+    expect(result).toBe(false);
+  });
+
+  it('allows run_terminal in non-TTY mode (DENY patterns block dangerous commands)', async () => {
+    // run_terminal is in TERMINAL_ASK_PATTERNS — allowed in non-TTY because
+    // dangerous commands (rm -rf, sudo, etc.) are blocked by DENY_PATTERNS.
+    const result = await gate.requestApproval('run_terminal');
     expect(result).toBe(true);
   });
 
