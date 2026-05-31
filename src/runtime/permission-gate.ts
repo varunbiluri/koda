@@ -63,6 +63,7 @@ const TERMINAL_ASK_PATTERNS: RegExp[] = [
 /** Read-only operations that are always auto-allowed. */
 const ALLOW_PATTERNS: RegExp[] = [
   /^read_file$/,
+  /^get_tool_result$/,
   /^search_code$/,
   /^list_files$/,
   /^search_files$/,

@@ -71,6 +71,8 @@ export interface AIProvider {
     onChunk: (chunk: string) => void,
   ): Promise<void>;
   listModels(): Promise<ModelInfo[]>;
+  /** Lightweight connection test (minimal completion request). */
+  testConnection(): Promise<void>;
 }
 
 export interface AIConfig {

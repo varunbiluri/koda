@@ -211,6 +211,7 @@ describe('setup wizard — happy path', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'my-secret-key' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' });
@@ -239,6 +240,7 @@ describe('setup wizard — happy path', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com/' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' });
@@ -260,6 +262,7 @@ describe('setup wizard — happy path', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o-mini' });
@@ -296,6 +299,7 @@ describe('setup wizard — arrow key selection', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockImplementationOnce((opts) => {
@@ -329,6 +333,7 @@ describe('setup wizard — arrow key selection', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockImplementationOnce((opts) => {
@@ -359,6 +364,7 @@ describe('setup wizard — deployment validation', () => {
     vi.mocked(AzureAIProvider.validateChatDeployment).mockResolvedValue(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'secret' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' });
@@ -388,6 +394,7 @@ describe('setup wizard — deployment validation', () => {
       .mockResolvedValueOnce(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' })          // first selection (fails)
@@ -413,6 +420,7 @@ describe('setup wizard — deployment validation', () => {
       .mockResolvedValueOnce(undefined);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' })
@@ -438,6 +446,7 @@ describe('setup wizard — deployment validation', () => {
     );
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: 'gpt-4o' })
@@ -471,6 +480,7 @@ describe('setup wizard — no compatible models', () => {
     vi.mocked(AzureAIProvider.filterChatCompatible).mockReturnValue([]);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' });
 
@@ -482,7 +492,7 @@ describe('setup wizard — no compatible models', () => {
 
     expect(result).toBe(false);
     expect(logs.some((l) => l.includes('No compatible chat models found'))).toBe(true);
-    expect(logs.some((l) => l.includes('koda login'))).toBe(true);
+    expect(logs.some((l) => l.includes('gpt-4o'))).toBe(true);
   });
 
   it('shows error message when no deployments at all', async () => {
@@ -493,6 +503,7 @@ describe('setup wizard — no compatible models', () => {
     vi.mocked(AzureAIProvider.filterChatCompatible).mockReturnValue([]);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' });
 
@@ -523,6 +534,7 @@ describe('setup wizard — connection retry', () => {
     vi.mocked(AzureAIProvider.filterChatCompatible).mockReturnValue([dep('gpt-4o')]);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'bad-key' })
       .mockResolvedValueOnce({ retry: true })
@@ -545,6 +557,7 @@ describe('setup wizard — connection retry', () => {
     vi.mocked(AzureAIProvider.fetchDeployments).mockRejectedValue(new Error('403'));
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ retry: false });
@@ -567,7 +580,9 @@ describe('setup wizard — cancellation', () => {
 
   it('returns false when endpoint prompt is cancelled', async () => {
     const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-    prompts.mockResolvedValueOnce({ endpoint: undefined });
+    prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
+      .mockResolvedValueOnce({ endpoint: undefined });
     const result = await new SessionManager(makeUI(), makeEngine()).runSetupWizard();
     expect(result).toBe(false);
   });
@@ -575,6 +590,7 @@ describe('setup wizard — cancellation', () => {
   it('returns false when API key prompt is cancelled', async () => {
     const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: undefined });
     const result = await new SessionManager(makeUI(), makeEngine()).runSetupWizard();
@@ -590,6 +606,7 @@ describe('setup wizard — cancellation', () => {
     vi.mocked(AzureAIProvider.filterChatCompatible).mockReturnValue([dep('gpt-4o')]);
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockResolvedValueOnce({ apiKey: 'k' })
       .mockResolvedValueOnce({ deployment: undefined });
@@ -612,6 +629,7 @@ describe('setup wizard — API key is a password prompt', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
     prompts
+      .mockResolvedValueOnce({ provider: 'azure' })
       .mockResolvedValueOnce({ endpoint: 'https://test.openai.azure.com' })
       .mockImplementationOnce((opts) => {
         expect(opts.type).toBe('password');

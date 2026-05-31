@@ -1,0 +1,12 @@
+[
+  { "id": "kcb-01", "kind": "fix", "description": "Fix off-by-one in pagination helper", "successHints": ["pagination", "slice"] },
+  { "id": "kcb-02", "kind": "fix", "description": "Fix null check missing in auth middleware", "successHints": ["null", "auth"] },
+  { "id": "kcb-03", "kind": "fix", "description": "Fix incorrect import path in utils module", "successHints": ["import", "path"] },
+  { "id": "kcb-04", "kind": "fix", "description": "Fix failing unit test for date formatter", "successHints": ["date", "format"] },
+  { "id": "kcb-05", "kind": "add", "description": "Add health check endpoint returning JSON status", "successHints": ["health", "endpoint"] },
+  { "id": "kcb-06", "kind": "add", "description": "Add rate limiter middleware with configurable window", "successHints": ["rate", "limit"] },
+  { "id": "kcb-07", "kind": "add", "description": "Add validation schema for user registration payload", "successHints": ["validation", "register"] },
+  { "id": "kcb-08", "kind": "refactor", "description": "Extract duplicated error handling into shared helper", "successHints": ["error", "helper"] },
+  { "id": "kcb-09", "kind": "refactor", "description": "Rename misnamed config constant to match usage", "successHints": ["rename", "config"] },
+  { "id": "kcb-10", "kind": "explain", "description": "Explain how the main entrypoint bootstraps the application", "successHints": ["entry", "bootstrap"] }
+]

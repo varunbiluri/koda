@@ -34,7 +34,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import * as path from 'node:path';
 import { configExists, loadConfig } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { createProvider } from '../../ai/providers/provider-factory.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { DagVerification } from '../../intelligence/dag-verification.js';
 import { RepoContextAnalyzer } from '../../intelligence/repo-context-analyzer.js';
@@ -44,7 +44,8 @@ import { ConfidenceEngine } from '../../intelligence/confidence-engine.js';
 import { Explainer } from '../../intelligence/explainer.js';
 import { failureAnalyzer } from '../../execution/failure-analyzer.js';
 import { loadIndexMetadata } from '../../store/index-store.js';
-import { ProductMetrics } from '../../product/metrics.js';
+import { ProductMetrics, DEFAULT_KEI_BASELINE_TOKENS } from '../../product/metrics.js';
+import { mergeChatMetrics, emptyChatMetrics, chatMetricsToTelemetry } from '../../product/task-telemetry.js';
 import { handleCliError } from '../errors.js';
 
 const DEFAULT_MAX_ITERATIONS = 3;
@@ -93,7 +94,7 @@ export const fixCommand = new Command('fix')
 
     try {
       const config    = await loadConfig();
-      const provider  = new AzureAIProvider(config);
+      const provider  = createProvider(config);
       const repoEnv   = await RepoContextAnalyzer.analyze(rootPath);
       const memory    = await GlobalMemoryStore.load(rootPath);
       const learner   = await LearningLoop.load(rootPath);
@@ -128,6 +129,7 @@ export const fixCommand = new Command('fix')
       let totalRetries = 0;
       const seenFingerprints = new Set<string>();
       let sameErrorCount = 0;
+      let runMetrics = emptyChatMetrics();
 
       while (iteration < maxIterations) {
         iteration++;
@@ -135,7 +137,7 @@ export const fixCommand = new Command('fix')
 
         const engine = new ReasoningEngine(index, provider);
         try {
-          await engine.chat(
+          const chatMetrics = await engine.chat(
             currentTask,
             chatContext,
             [],
@@ -147,7 +149,13 @@ export const fixCommand = new Command('fix')
                             stage.startsWith('ERROR') ? chalk.red : chalk.gray;
               console.log(color(`   ${icon} ${stage.replace(/^(INFO|WARN|ERROR)\s+/, '').slice(0, 110)}`));
             },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { route: 'cli', skipPlanning: true },
           );
+          runMetrics = mergeChatMetrics(runMetrics, chatMetrics);
         } catch (execErr) {
           console.log(chalk.red(`   ✗ Execution error: ${(execErr as Error).message}`));
           break;
@@ -238,7 +246,15 @@ export const fixCommand = new Command('fix')
       await Promise.all([memory.save(), learner.save()]);
 
       if (metrics) {
-        metrics.taskComplete({ success: succeeded, retries: totalRetries, durationMs });
+        if (!metrics.getStore().keiBaselineMedianTokens) {
+          metrics.setKeiBaseline(DEFAULT_KEI_BASELINE_TOKENS);
+        }
+        metrics.taskComplete({
+          success: succeeded,
+          retries: totalRetries,
+          durationMs,
+          telemetry: chatMetricsToTelemetry(runMetrics),
+        });
         await metrics.flush();
         const oneliner = metrics.formatOneLiner();
         if (oneliner) console.log(chalk.gray(`\n  ${oneliner}`));

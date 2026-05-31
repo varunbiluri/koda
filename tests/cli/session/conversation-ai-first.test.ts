@@ -307,11 +307,11 @@ describe('ToolRegistry', () => {
     runTerminal: vi.fn().mockResolvedValue({ success: true, data: { stdout: 'hello', stderr: '', exitCode: 0 } }),
   }));
 
-  it('getToolDefinitions() returns 20 tools', async () => {
+  it('getToolDefinitions() returns 21 tools', async () => {
     // replace_text and insert_after_pattern removed from LLM schema (deprecated)
     const { ToolRegistry } = await import('../../../src/tools/tool-registry.js');
     const registry = new ToolRegistry('/repo');
-    expect(registry.getToolDefinitions()).toHaveLength(20);
+    expect(registry.getToolDefinitions()).toHaveLength(21);
   });
 
   it('every tool definition has name, description, and parameters', async () => {

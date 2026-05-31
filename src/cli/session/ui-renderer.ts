@@ -2,8 +2,11 @@ import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import type { FilePatch } from '../../patch/types.js';
 import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
+import { mergeChatMetrics, emptyChatMetrics } from '../../product/task-telemetry.js';
 import type { ExecutionPlan, PlanStep } from '../../ai/reasoning/planning-engine.js';
 import type { ExecutionMetrics } from '../../execution/plan-executor.js';
+import { VERSION } from '../../constants.js';
+import { SLASH_CATEGORY_LABELS, getCommandsByCategory, type SlashCommandCategory } from './slash/registry.js';
 
 // ── Simple line-diff utility (no external dependency) ─────────────────────────
 
@@ -325,6 +328,7 @@ export class UIRenderer {
   private _toolUsage: Record<string, number> = {};
   private _planSteps: string[] = [];
   private _tokensUsed = 0;
+  private _sessionMetrics: ChatMetrics = emptyChatMetrics();
   private _timeline: Array<{ name: string; durationMs: number }> = [];
 
   readonly planTracker  = new PlanTracker();
@@ -348,6 +352,15 @@ export class UIRenderer {
     this._tokensUsed += n;
   }
 
+  recordChatMetrics(m: ChatMetrics): void {
+    this._sessionMetrics = mergeChatMetrics(this._sessionMetrics, m);
+    this.addTokens(m.tokens);
+  }
+
+  getSessionMetrics(): ChatMetrics {
+    return this._sessionMetrics;
+  }
+
   setTimeline(entries: Array<{ name: string; durationMs: number }>): void {
     this._timeline = entries;
   }
@@ -360,6 +373,7 @@ export class UIRenderer {
     this._toolUsage = {};
     this._planSteps = [];
     this._tokensUsed = 0;
+    this._sessionMetrics = emptyChatMetrics();
     this._timeline = [];
     this.planTracker.reset();
     this.dagVisualizer.reset();
@@ -369,27 +383,29 @@ export class UIRenderer {
 
   renderHeader(ctx: HeaderContext): void {
     console.log();
-    console.log(chalk.bold('  Koda') + chalk.gray(' — AI Software Engineer'));
-    console.log(chalk.gray('  v0.1.1'));
+    console.log(chalk.bold.cyan('  Koda') + chalk.gray(` v${VERSION}`));
+    console.log(chalk.gray('  Agentic coding in your terminal — free & open source'));
     console.log();
     console.log(
-      chalk.gray('  repo   ') + chalk.white(ctx.repoName) +
-      chalk.gray('   branch  ') + chalk.white(ctx.branch),
-    );
-    console.log(
-      chalk.gray('  index  ') + formatIndexStatus(ctx.indexStatus) +
-      chalk.gray('   model   ') + chalk.white(ctx.model),
+      chalk.gray('  ') +
+      chalk.white(ctx.repoName) +
+      chalk.gray(` (${ctx.branch})`) +
+      chalk.gray(' · ') +
+      formatIndexStatus(ctx.indexStatus) +
+      chalk.gray(' · ') +
+      chalk.white(ctx.model),
     );
     console.log();
   }
 
-  renderWelcome(question = 'What would you like to build?'): void {
-    console.log(chalk.gray('  ' + question));
+  renderWelcome(): void {
+    console.log(chalk.gray('  Ask in plain English, or use /commands (type /help).'));
+    console.log(chalk.gray('  Examples: fix the login bug · explain src/auth.ts · add rate limiting'));
     console.log();
   }
 
   renderPrompt(): void {
-    process.stdout.write(chalk.cyan('  > '));
+    process.stdout.write(chalk.cyan('> '));
   }
 
   // ── Spinner with live elapsed timer ──────────────────────────────────────
@@ -709,12 +725,14 @@ export class UIRenderer {
   // ── Execution summary ─────────────────────────────────────────────────────
 
   renderExecutionSummary(metrics: ChatMetrics): void {
-    this.addTokens(metrics.tokens);
     const tokensK = metrics.tokens >= 1000
       ? (metrics.tokens / 1000).toFixed(0) + 'k'
       : String(metrics.tokens);
+    const refPct  = metrics.toolResultsTotal > 0
+      ? ` · ${Math.round(metrics.refRate * 100)}% refs`
+      : '';
     console.log(
-      `  ${L.OK} ${chalk.gray(metrics.tools + ' tool' + (metrics.tools !== 1 ? 's' : '') + ' · ' + tokensK + ' tokens · ' + metrics.duration + 's')}`,
+      `  ${L.OK} ${chalk.gray(metrics.tools + ' tool' + (metrics.tools !== 1 ? 's' : '') + ' · ' + tokensK + ' tokens' + refPct + ' · ' + metrics.duration + 's')}`,
     );
     console.log();
   }
@@ -774,45 +792,54 @@ export class UIRenderer {
 
   renderHelp(): void {
     console.log();
-    console.log('  ' + chalk.bold('Natural language commands:'));
+    console.log('  ' + chalk.bold('Natural language (just type):'));
     console.log();
     const cmds: [string, string][] = [
-      ['explain <symbol>',   'Understand code in the repository'],
-      ['add <feature>',      'Build new functionality'],
-      ['fix <issue>',        'Debug and fix problems'],
-      ['refactor <target>',  'Improve code quality'],
-      ['find <term>',        'Search the codebase'],
-      ['status',             'Show repository and index status'],
-      ['help',               'Show this message'],
-      ['quit',               'Exit Koda'],
+      ['explain <file|symbol>', 'Understand code in the repository'],
+      ['fix <bug description>',   'Find root cause, patch, run tests'],
+      ['add <feature>',           'Plan, implement, and verify'],
+      ['refactor <path>',         'Improve code safely'],
+      ['run tests',               'Execute test suite and report'],
+      ['status',                  'Repository and index status'],
     ];
     for (const [cmd, desc] of cmds) {
-      console.log(`  ${chalk.cyan(cmd.padEnd(22))} ${chalk.gray(desc)}`);
+      console.log(`  ${chalk.cyan(cmd.padEnd(26))} ${chalk.gray(desc)}`);
     }
     console.log();
     console.log('  ' + chalk.bold('Slash commands:'));
     console.log();
-    const slash: [string, string][] = [
-      ['/context',  'Files retrieved in last response'],
-      ['/tools',    'Tools used this session'],
-      ['/plan',     'Last generated execution plan'],
-      ['/budget',   'Token usage for this session'],
-      ['/history',  'Message count in current session'],
-      ['/diff',     'Show pending git changes'],
-      ['/clear',    'Clear the terminal screen'],
-      ['/reset',    'Clear screen and session history'],
-      ['/help',     'Show this message'],
+
+    const categoryOrder: SlashCommandCategory[] = [
+      'help', 'session', 'context', 'git', 'tools', 'config', 'mcp', 'skills', 'platform',
     ];
-    for (const [cmd, desc] of slash) {
-      console.log(`  ${chalk.cyan(cmd.padEnd(22))} ${chalk.gray(desc)}`);
+    const byCategory = getCommandsByCategory();
+
+    for (const category of categoryOrder) {
+      const commands = byCategory.get(category);
+      if (!commands?.length) continue;
+
+      console.log(`  ${chalk.bold(SLASH_CATEGORY_LABELS[category])}`);
+      for (const { name, description, wip } of commands) {
+        const tag = wip ? chalk.yellow(' [wip]') : '';
+        console.log(`    ${chalk.cyan(name.padEnd(22))}${tag} ${chalk.gray(description)}`);
+      }
+      console.log();
     }
+    console.log('  ' + chalk.bold('CLI shortcuts (outside session):'));
+    console.log();
+    console.log(`  ${chalk.cyan('koda fix "<bug>"'.padEnd(26))} ${chalk.gray('One-shot autonomous fix')}`);
+    console.log(`  ${chalk.cyan('koda add "<feature>"'.padEnd(26))} ${chalk.gray('One-shot feature build')}`);
+    console.log(`  ${chalk.cyan('koda init'.padEnd(26))} ${chalk.gray('Index repository')}`);
+    console.log(`  ${chalk.cyan('koda mcp list'.padEnd(26))} ${chalk.gray('Manage MCP servers')}`);
+    console.log();
+    console.log(`  ${chalk.gray('Commands marked')} ${chalk.yellow('[wip]')} ${chalk.gray('show guidance only or are not fully implemented yet.')}`);
     console.log();
   }
 
   renderSetupHeader(): void {
     console.log();
     console.log(chalk.bold('  Koda Setup'));
-    console.log(chalk.gray('  Configure your Azure AI Foundry connection'));
+    console.log(chalk.gray('  Configure Azure, OpenAI, Anthropic, or Ollama'));
     console.log();
   }
 
@@ -863,14 +890,34 @@ export class UIRenderer {
   }
 
   slashBudget(budgetMax = 50_000): void {
-    const used = this._tokensUsed;
-    const pct = budgetMax > 0 ? Math.round((used / budgetMax) * 100) : 0;
+    this.slashEfficiency(undefined, budgetMax);
+  }
+
+  slashEfficiency(
+    productMetrics?: import('../../product/metrics.js').ProductMetrics | null,
+    budgetMax = 50_000,
+  ): void {
+    const sm   = this._sessionMetrics;
+    const used = sm.tokens > 0 ? sm.tokens : this._tokensUsed;
+    const pct  = budgetMax > 0 ? Math.round((used / budgetMax) * 100) : 0;
     const usedStr = used >= 1000 ? (used / 1000).toFixed(1) + 'k' : String(used);
     const maxStr  = budgetMax >= 1000 ? (budgetMax / 1000).toFixed(0) + 'k' : String(budgetMax);
-    const color = pct > 80 ? chalk.red : pct > 50 ? chalk.yellow : chalk.green;
+    const color   = pct > 80 ? chalk.red : pct > 50 ? chalk.yellow : chalk.green;
+    const refPct  = sm.toolResultsTotal > 0 ? Math.round(sm.refRate * 100) : 0;
+
     console.log();
-    console.log(`  ${chalk.bold('BUDGET')}`);
-    console.log(`  ${color(pct + '%').padEnd(8)} ${usedStr} / ${maxStr} tokens`);
+    console.log(`  ${chalk.bold('EFFICIENCY')}`);
+    console.log(`  ${color(pct + '%').padEnd(8)} ${usedStr} / ${maxStr} session tokens`);
+    if (refPct > 0) {
+      console.log(`  ${chalk.gray('Ref rate:')}     ${refPct}% via references`);
+    }
+    if (sm.promptTokens > 0) {
+      console.log(`  ${chalk.gray('Prompt:')}       ${sm.promptTokens.toLocaleString()} · Completion: ${sm.completionTokens.toLocaleString()}`);
+    }
+    if (productMetrics) {
+      console.log();
+      console.log(chalk.gray(productMetrics.formatEfficiencyReport(used, sm.refRate)));
+    }
     console.log();
   }
 

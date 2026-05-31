@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Koda — Autonomous AI Engineer</title>
-  <meta name="description" content="Give Koda a task. Come back to a working diff. Autonomous bug fixing, feature addition, and refactoring — verified by tests." />
-  <meta property="og:title" content="Koda — Autonomous AI Engineer" />
-  <meta property="og:description" content="Give Koda a task. Come back to a working diff." />
+  <title>Koda — Agentic Coding in Your Terminal</title>
+  <meta name="description" content="Open-source coding agent focused on repository intelligence, context efficiency, and built-in benchmarking." />
+  <meta property="og:title" content="Koda — Agentic Coding in Your Terminal" />
+  <meta property="og:description" content="Repository intelligence, context efficiency, transparent token telemetry." />
   <meta property="og:image" content="https://raw.githubusercontent.com/varunbiluri/koda/main/assets/demo.gif" />
   <meta name="twitter:card" content="summary_large_image" />
   <style>
@@ -184,7 +184,10 @@
       transition: border-color 0.2s;
     }
     .workflow-card:hover { border-color: var(--blue); }
-    .workflow-icon { font-size: 1.6rem; margin-bottom: 16px; }
+    .workflow-icon {
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--blue); margin-bottom: 16px;
+    }
     .workflow-cmd {
       background: #010409; border: 1px solid var(--border);
       border-radius: 6px; padding: 8px 14px;
@@ -217,7 +220,8 @@
     .pillar-icon {
       width: 40px; height: 40px; border-radius: 8px; flex-shrink: 0;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1.1rem;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+      color: var(--blue);
     }
     .pillar-icon.blue   { background: rgba(88,166,255,0.12); }
     .pillar-icon.green  { background: rgba(63,185,80,0.12); }
@@ -231,7 +235,10 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; padding: 24px;
     }
-    .trust-card .icon { font-size: 1.4rem; margin-bottom: 12px; }
+    .trust-card .icon {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--blue); margin-bottom: 12px;
+    }
     .trust-card h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 6px; }
     .trust-card p  { font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
 
@@ -285,7 +292,7 @@
 
 <!-- ── Nav ──────────────────────────────────────────────────────────────── -->
 <nav>
-  <a class="nav-logo" href="#"><span>⚡</span> Koda</a>
+  <a class="nav-logo" href="#"><span>K</span> Koda</a>
   <div class="nav-links">
     <a href="#workflows">Workflows</a>
     <a href="#how">How it works</a>
@@ -299,14 +306,14 @@
 <!-- ── Hero ─────────────────────────────────────────────────────────────── -->
 <div class="hero">
   <div class="hero-badge">
-    <span>⚡</span> Autonomous AI Engineer — not a copilot
+    Open-source coding agent — repository intelligence and context efficiency
   </div>
 
   <h1>Fix bugs. Add features.<br /><em>Ship code — for free.</em></h1>
   <p>
-    Your autonomous AI engineer — completely free, no limits.
-    Koda executes the full loop: find root cause → write patch → run tests →
-    self-correct until done. You review the diff and commit.
+    Koda runs in your terminal with built-in benchmarking and transparent token telemetry.
+    It executes the full loop: find root cause, write patch, run tests, and self-correct until done.
+    You review the diff and commit.
   </p>
   <div class="free-badge">100% free &nbsp;·&nbsp; No limits &nbsp;·&nbsp; No lock-in &nbsp;·&nbsp; Open source</div>
   <div class="hero-actions">
@@ -317,7 +324,7 @@
     <div class="install-strip">
       <span class="prompt">$</span>
       <code>npm install -g @varunbilluri/koda</code>
-      <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g @varunbilluri/koda').then(()=>this.textContent='✓').catch(()=>{})">Copy</button>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('npm install -g @varunbilluri/koda').then(()=>this.textContent='Copied').catch(()=>{})">Copy</button>
     </div>
     <div class="install-strip" style="margin-top:6px">
       <span class="prompt">$</span>
@@ -340,14 +347,14 @@
       <div class="dot dot-green"></div>
       <span>koda fix "null pointer in auth middleware"</span>
     </div>
-    <img src="../assets/demo.gif" alt="Koda demo — fix bug autonomously" loading="lazy" />
+    <img src="assets/demo.gif" alt="Koda demo — fix bug autonomously" loading="lazy" />
   </div>
 </div>
 
 <!-- ── Proof bar ─────────────────────────────────────────────────────────── -->
 <div class="proof-bar">
   <div class="proof-item">
-    <div class="proof-number">1,229+</div>
+    <div class="proof-number">1,279+</div>
     <div class="proof-label">tests passing</div>
   </div>
   <div class="proof-item">
@@ -379,41 +386,41 @@
 
   <div class="workflows">
     <div class="workflow-card">
-      <div class="workflow-icon">🐛</div>
+      <div class="workflow-icon">Fix</div>
       <code class="workflow-cmd">koda fix "null pointer in auth middleware"</code>
       <h3>Fix a bug</h3>
       <p>Describe the bug in plain English. Koda finds the root cause, patches the file, and verifies the fix with your test suite.</p>
       <div class="workflow-steps">
-        <div class="step"><span class="step-icon">○</span> Root-cause analysis across the codebase</div>
-        <div class="step"><span class="step-icon">○</span> Targeted patch — not a rewrite</div>
-        <div class="step"><span class="step-icon">○</span> Runs tests, self-corrects if they fail</div>
-        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Verified diff ready to commit</div>
+        <div class="step"><span class="step-icon">-</span> Root-cause analysis across the codebase</div>
+        <div class="step"><span class="step-icon">-</span> Targeted patch — not a rewrite</div>
+        <div class="step"><span class="step-icon">-</span> Runs tests, self-corrects if they fail</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">+</span> Verified diff ready to commit</div>
       </div>
     </div>
 
     <div class="workflow-card">
-      <div class="workflow-icon">✨</div>
+      <div class="workflow-icon">Add</div>
       <code class="workflow-cmd">koda add "rate limiting with Redis"</code>
       <h3>Add a feature</h3>
       <p>Describe what you need. Koda reads your existing code, matches your patterns, implements the feature, and writes the tests.</p>
       <div class="workflow-steps">
-        <div class="step"><span class="step-icon">○</span> Analyses existing code patterns</div>
-        <div class="step"><span class="step-icon">○</span> Plans files to create / update</div>
-        <div class="step"><span class="step-icon">○</span> Generates tests automatically</div>
-        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Build + tests must pass to complete</div>
+        <div class="step"><span class="step-icon">-</span> Analyses existing code patterns</div>
+        <div class="step"><span class="step-icon">-</span> Plans files to create / update</div>
+        <div class="step"><span class="step-icon">-</span> Generates tests automatically</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">+</span> Build + tests must pass to complete</div>
       </div>
     </div>
 
     <div class="workflow-card">
-      <div class="workflow-icon">🔧</div>
+      <div class="workflow-icon">Ref</div>
       <code class="workflow-cmd">koda refactor src/auth/</code>
       <h3>Refactor a module</h3>
       <p>Point Koda at a module. It restructures the code, preserves all existing behaviour, and confirms nothing broke.</p>
       <div class="workflow-steps">
-        <div class="step"><span class="step-icon">○</span> Impact analysis — knows what depends on what</div>
-        <div class="step"><span class="step-icon">○</span> Preserves public API surface</div>
-        <div class="step"><span class="step-icon">○</span> Full test suite must stay green</div>
-        <div class="step"><span class="step-icon" style="color:var(--green)">✓</span> Approve each file change individually</div>
+        <div class="step"><span class="step-icon">-</span> Impact analysis — knows what depends on what</div>
+        <div class="step"><span class="step-icon">-</span> Preserves public API surface</div>
+        <div class="step"><span class="step-icon">-</span> Full test suite must stay green</div>
+        <div class="step"><span class="step-icon" style="color:var(--green)">+</span> Approve each file change individually</div>
       </div>
     </div>
   </div>
@@ -432,46 +439,46 @@
     <div class="terminal-block">
 <span class="t-prompt">$</span> <span class="t-cmd">koda fix "users can't log in after password reset"</span>
 
-<span style="color:var(--blue);font-weight:700">⚡ Koda — Autonomous Bug Fix</span>
+<span style="color:var(--blue);font-weight:700">Koda — Autonomous Bug Fix</span>
 <span class="t-stage">   users can't log in after password reset</span>
 
 <span style="color:var(--blue)">── Step 1 / 3 ─────────────────────</span>
-<span class="t-stage">   ○ Searching for password reset flow...</span>
-<span class="t-stage">   ○ Found: src/auth/reset-service.ts</span>
-<span class="t-stage">   ○ Root cause: token not invalidated after use</span>
-<span class="t-stage">   ○ Patching src/auth/reset-service.ts</span>
+<span class="t-stage">   Searching for password reset flow...</span>
+<span class="t-stage">   Found: src/auth/reset-service.ts</span>
+<span class="t-stage">   Root cause: token not invalidated after use</span>
+<span class="t-stage">   Patching src/auth/reset-service.ts</span>
 
-<span class="t-stage">   ○ Verifying — running pnpm test...</span>
-<span class="t-success">   ✓ Fix verified in 1 step</span>
+<span class="t-stage">   Verifying — running pnpm test...</span>
+<span class="t-success">   Fix verified in 1 step</span>
 
-<span class="t-success">✓ Done in 14.2s</span>
+<span class="t-success">Done in 14.2s</span>
 <span class="t-stage">  3/4 tasks completed (75%) · ~1.2h saved</span>
     </div>
 
     <div class="pillars">
       <div class="pillar">
-        <div class="pillar-icon blue">⚡</div>
+        <div class="pillar-icon blue">EXE</div>
         <div>
           <h4>Execution, not suggestion</h4>
           <p>Koda writes the code, runs the tests, and gives you a verified diff. It doesn't paste suggestions into a chat window.</p>
         </div>
       </div>
       <div class="pillar">
-        <div class="pillar-icon green">↩</div>
+        <div class="pillar-icon green">FIX</div>
         <div>
           <h4>Autonomous self-correction</h4>
           <p>If tests fail, Koda classifies the error, adjusts its approach, and tries again — up to 3 iterations by default.</p>
         </div>
       </div>
       <div class="pillar">
-        <div class="pillar-icon yellow">◆</div>
+        <div class="pillar-icon yellow">LEARN</div>
         <div>
           <h4>Learns from your repo</h4>
           <p>Every session, Koda records which strategies worked. Future fix attempts in the same repo are smarter.</p>
         </div>
       </div>
       <div class="pillar">
-        <div class="pillar-icon blue">⊕</div>
+        <div class="pillar-icon blue">IMPACT</div>
         <div>
           <h4>Impact-aware changes</h4>
           <p>Before touching a high-dependency file, Koda shows you how many files it affects. You choose to proceed or not.</p>
@@ -492,32 +499,32 @@
 
   <div class="trust-grid">
     <div class="trust-card">
-      <div class="icon">✅</div>
+      <div class="icon">Auto</div>
       <h4>Read-only auto-approved</h4>
       <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">read_file</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">search_code</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git_log</code> — never needs your permission. Zero friction for analysis.</p>
     </div>
     <div class="trust-card">
-      <div class="icon">🔒</div>
+      <div class="icon">Ask</div>
       <h4>Writes require approval</h4>
       <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">write_file</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git_commit</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">run_terminal</code> — prompts before every state-changing operation.</p>
     </div>
     <div class="trust-card">
-      <div class="icon">🚫</div>
+      <div class="icon">Block</div>
       <h4>Dangerous ops blocked forever</h4>
       <p><code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">rm -rf</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">git push --force</code>, <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">DROP TABLE</code> — unconditionally blocked. Cannot be overridden.</p>
     </div>
     <div class="trust-card">
-      <div class="icon">🧪</div>
+      <div class="icon">Verify</div>
       <h4>Verified before done</h4>
       <p>Koda considers a task complete only after <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">pnpm build</code> and <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">pnpm test</code> both pass. No silent breakage.</p>
     </div>
     <div class="trust-card">
-      <div class="icon">📊</div>
+      <div class="icon">Score</div>
       <h4>Confidence scoring</h4>
       <p>Koda scores its own confidence (HIGH / MEDIUM / LOW). Low confidence triggers a stop and asks for guidance — not a guess.</p>
     </div>
     <div class="trust-card">
-      <div class="icon">💾</div>
+      <div class="icon">Local</div>
       <h4>Your data stays local</h4>
       <p>All code, index files, and memory are stored in <code style="font-family:monospace;font-size:0.8rem;color:var(--muted)">.koda/</code> in your repo. Nothing leaves your machine without your API key.</p>
     </div>
@@ -571,9 +578,9 @@
 <span class="t-stage">  added 1 package in 3s</span>
 
 <span class="t-prompt">$</span> <span class="t-cmd">cd my-project && koda init</span>
-<span class="t-stage">  ✓ Repository indexed</span>
+<span class="t-stage">  Repository indexed</span>
 <span class="t-stage">    Files: 847  Chunks: 3 421  Deps: 1 204</span>
-<span class="t-stage">  ✓ AGENTS.md generated</span>
+<span class="t-stage">  AGENTS.md generated</span>
 <br/>
 <span style="color:var(--blue);font-weight:700">  Welcome to Koda — your autonomous engineer</span>
 <span class="t-stage">  Runtime:   Node.js</span>
@@ -581,13 +588,13 @@
 <span class="t-stage">  Files:     847 indexed</span>
 
 <span class="t-prompt">$</span> <span class="t-cmd">koda login</span>
-<span class="t-stage">  ✓ Provider configured: Azure (gpt-4o)</span>
+<span class="t-stage">  Provider configured: Azure (gpt-4o)</span>
 
 <span class="t-prompt">$</span> <span class="t-cmd">koda fix "login fails after password reset"</span>
-<span class="t-stage">  ○ Finding root cause...</span>
-<span class="t-stage">  ○ Patching src/auth/reset.ts</span>
-<span class="t-stage">  ○ Verifying...</span>
-<span class="t-success">  ✓ Done in 18.3s</span>
+<span class="t-stage">  Finding root cause...</span>
+<span class="t-stage">  Patching src/auth/reset.ts</span>
+<span class="t-stage">  Verifying...</span>
+<span class="t-success">  Done in 18.3s</span>
     </div>
   </div>
 </section>
@@ -611,7 +618,7 @@
   <a href="https://github.com/varunbiluri/koda/blob/main/CONTRIBUTING.md">Contributing</a>
   <a href="https://github.com/varunbiluri/koda/blob/main/SECURITY.md">Security</a>
   <a href="https://github.com/varunbiluri/koda/issues">Issues</a>
-  <a href="https://github.com/varunbiluri/koda/blob/main/LICENSE">ISC License</a>
+  <a href="https://github.com/varunbiluri/koda/blob/main/LICENSE">MIT License</a>
 </footer>
 
 <script>
@@ -620,7 +627,7 @@
     btn.addEventListener('click', function() {
       var code = btn.previousElementSibling && btn.previousElementSibling.textContent;
       if (code) navigator.clipboard.writeText(code.trim()).then(function() {
-        btn.textContent = '✓ Copied';
+        btn.textContent = 'Copied';
         setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
       }).catch(function() {});
     });
