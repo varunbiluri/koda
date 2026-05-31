@@ -3,7 +3,6 @@ import { VERSION } from '../constants.js';
 import { initCommand } from './commands/init.js';
 import { askCommand } from './commands/ask.js';
 import { statusCommand } from './commands/status.js';
-import { replCommand } from './commands/repl.js';
 import { loginCommand } from './commands/login.js';
 import { modelsCommand } from './commands/models.js';
 import { useCommand } from './commands/use.js';
@@ -30,11 +29,16 @@ import { createAutoCommand } from './commands/auto.js';
 import { createAddCommand } from './commands/add.js';
 import { createFeedbackCommand } from './commands/feedback.js';
 import { createUpdateCommand } from './commands/update.js';
+import { createChatCommand } from './commands/chat.js';
+import { createMcpCommand } from './commands/mcp.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
     .version(VERSION)
-    .description('Koda — Autonomous AI engineer for your codebase');
+    .description('Koda — agentic coding tool in your terminal (like Claude Code, free & open source)');
+
+  // ── Interactive agent (primary UX — same as `koda` with no args) ──────────
+  program.addCommand(createChatCommand());
 
   // ── Core developer workflows (product mission) ────────────────────────────
   program.addCommand(fixCommand);          // koda fix  "<bug>"
@@ -78,6 +82,7 @@ export function createProgram(): Command {
 
   // Phase 8: Conversational CLI
   program.addCommand(createConfigCommand());
+  program.addCommand(createMcpCommand());
 
   // Phase 10: Autonomous Engineering System
   program.addCommand(createReviewCommand());
@@ -86,9 +91,6 @@ export function createProgram(): Command {
   // Launch — feedback loop + update
   program.addCommand(createFeedbackCommand());
   program.addCommand(createUpdateCommand());
-
-  // Interactive mode
-  program.addCommand(replCommand);
 
   return program;
 }

@@ -9,6 +9,7 @@ import { RepoExplorer } from './repo-explorer.js';
 import { SandboxManager } from '../runtime/sandbox-manager.js';
 import { TOOL_LIMITS } from '../runtime/tool-output-limits.js';
 import { permissionGate, PermissionLevel } from '../runtime/permission-gate.js';
+import type { ToolResultIndex } from '../runtime/tool-result-index.js';
 import { simpleDiff } from '../cli/session/ui-renderer.js';
 import { logger } from '../utils/logger.js';
 import * as path from 'node:path';
@@ -33,6 +34,8 @@ export class ToolRegistry {
    * readline prompt is used as a fallback.
    */
   onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>;
+  /** Set by ReasoningEngine so get_tool_result can resolve stored outputs. */
+  toolResultIndex?: ToolResultIndex;
 
   constructor(private rootPath: string) {
     this.sandbox  = new SandboxManager(rootPath);
@@ -58,14 +61,42 @@ export class ToolRegistry {
       {
         type: 'function',
         function: {
+          name: 'get_tool_result',
+          description:
+            'Fetch the full output of a previously stored tool result by reference ID (e.g. result_42). ' +
+            'Use after read_file or grep_code returned a compact reference.',
+          parameters: {
+            type: 'object',
+            properties: {
+              ref: {
+                type: 'string',
+                description: 'Tool result reference ID, e.g. result_42.',
+              },
+            },
+            required: ['ref'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
           name: 'read_file',
-          description: 'Read the full contents of a file in the repository.',
+          description:
+            'Read a file in the repository. Use startLine/endLine to read a section without loading the whole file.',
           parameters: {
             type: 'object',
             properties: {
               path: {
                 type: 'string',
                 description: 'File path relative to the repository root.',
+              },
+              startLine: {
+                type: 'number',
+                description: 'Optional 1-based start line (inclusive).',
+              },
+              endLine: {
+                type: 'number',
+                description: 'Optional 1-based end line (inclusive).',
               },
             },
             required: ['path'],
@@ -493,10 +524,21 @@ export class ToolRegistry {
     // ── End permission gate ───────────────────────────────────────────────────
 
     switch (name) {
+      case 'get_tool_result': {
+        const refId = String(args['ref'] ?? args['id'] ?? '');
+        if (!this.toolResultIndex) {
+          return done('Error: Tool result index not available');
+        }
+        onStage?.(`READ ${refId}`);
+        return done(this.toolResultIndex.getOutput(refId));
+      }
+
       case 'read_file': {
         const filePath = String(args['path'] ?? '');
         onStage?.(`READ ${filePath}`);
-        const result = await readFile(filePath, this.rootPath);
+        const startLine = typeof args['startLine'] === 'number' ? args['startLine'] : undefined;
+        const endLine   = typeof args['endLine'] === 'number' ? args['endLine'] : undefined;
+        const result = await readFile(filePath, this.rootPath, { startLine, endLine });
         if (!result.success) return done(`Error: ${result.error}`);
         const content = result.data ?? '';
         // Tools are unbounded; full output is available to ToolResultIndex.

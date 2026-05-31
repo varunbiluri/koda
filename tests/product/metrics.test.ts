@@ -104,4 +104,46 @@ describe('ProductMetrics — recentTasks', () => {
     expect(m.getStore().recentTasks[0].kind).toBe('fix');
     expect(m.getStore().recentTasks[0].description).toBe('described bug');
   });
+
+  it('v2 stores token telemetry on taskComplete', async () => {
+    const m = await fresh();
+    m.taskStart('fix', 'telemetry test');
+    m.taskComplete({
+      success: true,
+      retries: 0,
+      telemetry: {
+        provider: 'openai',
+        model: 'gpt-4o',
+        promptTokens: 42000,
+        completionTokens: 3100,
+        toolCalls: 18,
+        refRate: 0.55,
+        toolResultsTotal: 20,
+        toolResultsViaRef: 11,
+        route: 'cli',
+        contextPeakChars: 65000,
+      },
+    });
+    const rec = m.getStore().recentTasks[0]!;
+    expect(rec.promptTokens).toBe(42000);
+    expect(rec.refRate).toBe(0.55);
+    expect(rec.route).toBe('cli');
+    expect(m.getStore().totalPromptTokens).toBe(42000);
+  });
+
+  it('computeKei returns value when baseline is set', async () => {
+    const m = await fresh();
+    m.setKeiBaseline(50_000);
+    m.taskStart('fix', 'a');
+    m.taskComplete({
+      success: true,
+      retries: 0,
+      telemetry: {
+        provider: 'openai', model: 'gpt-4o',
+        promptTokens: 40_000, completionTokens: 2_000,
+        toolCalls: 10, refRate: 0.5, toolResultsTotal: 10, toolResultsViaRef: 5,
+      },
+    });
+    expect(m.computeKei()).toBeGreaterThan(0);
+  });
 });

@@ -1,7 +1,7 @@
 import type { Agent, AgentInput, AgentOutput, AgentCategory } from './types.js';
 import type { WorkspaceMemory } from '../memory/workspace-memory.js';
 import { ReasoningEngine } from '../ai/reasoning/reasoning-engine.js';
-import { AzureAIProvider } from '../ai/providers/azure-provider.js';
+import { createProvider } from '../ai/providers/provider-factory.js';
 import { loadConfig, configExists } from '../ai/config-store.js';
 
 export abstract class BaseAgent implements Agent {
@@ -31,7 +31,7 @@ export abstract class BaseAgent implements Agent {
       }
 
       const config = await loadConfig();
-      const provider = new AzureAIProvider(config);
+      const provider = createProvider(config);
       const engine = new ReasoningEngine(repoIndex, provider);
 
       const result = await engine.analyze(query, { maxResults: 5 });

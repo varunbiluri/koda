@@ -4,10 +4,35 @@ import { spawn } from 'node:child_process';
 import type { ToolResult } from './types.js';
 import type { RepoIndex } from '../types/index.js';
 
-export async function readFile(filePath: string, rootPath: string): Promise<ToolResult<string>> {
+export interface ReadFileOptions {
+  startLine?: number;
+  endLine?:   number;
+}
+
+export async function readFile(
+  filePath: string,
+  rootPath: string,
+  opts: ReadFileOptions = {},
+): Promise<ToolResult<string>> {
   try {
     const absolutePath = path.resolve(rootPath, filePath);
-    const content = await fs.readFile(absolutePath, 'utf-8');
+    const content      = await fs.readFile(absolutePath, 'utf-8');
+    const lines        = content.split('\n');
+
+    const start = opts.startLine !== undefined ? Math.max(1, opts.startLine) : 1;
+    const end   = opts.endLine !== undefined
+      ? Math.min(lines.length, opts.endLine)
+      : lines.length;
+
+    if (opts.startLine !== undefined || opts.endLine !== undefined) {
+      if (start > lines.length) {
+        return { success: false, error: `startLine ${start} exceeds file length (${lines.length} lines)` };
+      }
+      const slice = lines.slice(start - 1, end).join('\n');
+      const header = `// ${filePath}:${start}-${end} (${end - start + 1} lines)\n`;
+      return { success: true, data: header + slice };
+    }
+
     return { success: true, data: content };
   } catch (err) {
     return {

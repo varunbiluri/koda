@@ -5,6 +5,7 @@ import type { AIProvider } from '../types.js';
 import type { RepoIndex } from '../../types/index.js';
 import type { CodeChunk } from '../../types/code-chunk.js';
 import { getRepoIntelligenceCache } from '../../cache/repo-intelligence-cache.js';
+import { compressRepositoryContext } from '../../intelligence/retrieval-context.js';
 import { logger } from '../../utils/logger.js';
 
 // ── Public constants ──────────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ export class PlanningEngine {
 
     const steps = parsePlanSteps(planText);
 
-    return { steps, query, repositoryContext: architectureBlock };
+    return { steps, query, repositoryContext: compressRepositoryContext(architectureBlock) };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

@@ -1,15 +1,15 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { createProvider } from '../../ai/providers/provider-factory.js';
 import { handleCliError } from '../errors.js';
 
 export const modelsCommand = new Command('models')
-  .description('List available AI models from Azure AI Foundry')
+  .description('List available AI models for the configured provider')
   .action(async () => {
     try {
       const config = await loadConfig();
-      const provider = new AzureAIProvider(config);
+      const provider = createProvider(config);
 
       console.log(chalk.bold('\nFetching available models...\n'));
 
