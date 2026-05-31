@@ -59,7 +59,7 @@ Koda already ships: REPL, MCP, 4 providers, Ollama, LSP, VS Code extension, auto
 
 **Stateless REPL:** each turn rebuilds context from the repo index — no full transcript memory by design.
 
-See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full stack.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full stack.
 
 ---
 

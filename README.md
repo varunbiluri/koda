@@ -32,7 +32,7 @@ Koda is an **open-source coding agent** focused on **repository intelligence** a
 
 **You describe. Koda executes. You review the diff.**
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) for architecture, metrics, and v0.1.3 release gates.
+See [docs/](docs/) — [Architecture](docs/ARCHITECTURE.md), [Project context](docs/PROJECT_CONTEXT.md), [Contributing](docs/CONTRIBUTING.md).
 
 ---
 
