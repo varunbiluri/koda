@@ -4,7 +4,8 @@ import { detectIntent } from './intent-detector.js';
 import { UIRenderer } from './ui-renderer.js';
 import { loadIndexMetadata } from '../../store/index-store.js';
 import { configExists, loadConfig } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { createProvider } from '../../ai/providers/provider-factory.js';
+import type { AIProvider } from '../../ai/types.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
 import { TaskRouter, TaskComplexity } from '../../orchestrator/task-router.js';
@@ -23,6 +24,9 @@ import { ProactiveAdvisor } from '../../intelligence/proactive-advisor.js';
 import { ImpactAnalyzer } from '../../intelligence/impact-analyzer.js';
 import { LearningLoop } from '../../intelligence/learning-loop.js';
 import { ConfidenceEngine } from '../../intelligence/confidence-engine.js';
+import { persistTurnMetrics } from './session-metrics.js';
+import { emptyChatMetrics, mergeChatMetrics } from '../../product/task-telemetry.js';
+import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
 
 export interface ConversationContext {
   rootPath: string;
@@ -61,6 +65,7 @@ export class ConversationEngine {
   private lastTimeline: Array<{ name: string; durationMs: number }> = [];
   /** Task complexity router — classifies every incoming query before execution. */
   private readonly taskRouter = new TaskRouter();
+  private turnMetrics: ChatMetrics = emptyChatMetrics();
 
   constructor(ui?: UIRenderer) {
     this.ui = ui ?? new UIRenderer();
@@ -70,7 +75,20 @@ export class ConversationEngine {
 
   resetHistory(): void {
     this.sessionId = `session-${Date.now()}`;
+    this.turnMetrics = emptyChatMetrics();
     this.ui.resetSessionState();
+  }
+
+  private async finalizeTurn(
+    input:   string,
+    ctx:     ConversationContext,
+    route:   string,
+    metrics: ChatMetrics,
+    success = true,
+  ): Promise<void> {
+    this.turnMetrics = mergeChatMetrics(this.turnMetrics, metrics);
+    this.ui.recordChatMetrics(metrics);
+    await persistTurnMetrics(ctx.rootPath, 'chat', input, success, route, metrics);
   }
 
   /**
@@ -165,7 +183,7 @@ export class ConversationEngine {
 
       // ── Step 1: Route execution ───────────────────────────────────────────
       const config   = await loadConfig();
-      const provider = new AzureAIProvider(config);
+      const provider = createProvider(config);
 
       if (route === TaskComplexity.COMPLEX && ctx.index) {
         // ── COMPLEX path — DAG-based parallel execution via GraphScheduler ─
@@ -210,8 +228,7 @@ export class ConversationEngine {
             timeline.push({ name: toolName, durationMs });
           },
           signal,
-          // SIMPLE path: default 20 rounds (no per-step capping)
-          undefined,
+          { route: 'simple' },
           onDiff,
         );
 
@@ -221,6 +238,7 @@ export class ConversationEngine {
 
         if (metrics) {
           this.ui.renderExecutionSummary(metrics);
+          await this.finalizeTurn(input, ctx, 'simple', metrics);
           if (timeline.length > 0) {
             this.ui.renderTimeline(timeline);
           }
@@ -285,7 +303,7 @@ export class ConversationEngine {
   private async _runWithGraphScheduler(
     input:    string,
     ctx:      ConversationContext,
-    provider: AzureAIProvider,
+    provider: AIProvider,
     signal?:  AbortSignal,
     onDiff?:  (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<string> {
@@ -559,7 +577,10 @@ export class ConversationEngine {
       );
 
       this.ui.renderStreamEnd();
-      if (metrics) this.ui.renderExecutionSummary(metrics);
+      if (metrics) {
+        this.ui.renderExecutionSummary(metrics);
+        await this.finalizeTurn(input, ctx, 'complex', metrics);
+      }
 
       return assistantResponse;
     }
@@ -577,7 +598,7 @@ export class ConversationEngine {
   private async _runWithOrchestrator(
     input:    string,
     ctx:      ConversationContext,
-    provider: AzureAIProvider,
+    provider: AIProvider,
     signal?:  AbortSignal,
   ): Promise<string> {
     // Lazy-import to keep the startup path fast and avoid any circular deps
@@ -649,6 +670,7 @@ export class ConversationEngine {
 
       if (metrics) {
         this.ui.renderExecutionSummary(metrics);
+        await this.finalizeTurn(input, ctx, 'medium', metrics);
         if (timeline.length > 0) this.ui.renderTimeline(timeline);
       }
 
@@ -670,7 +692,7 @@ export class ConversationEngine {
   private async _runWithPipeline(
     input:    string,
     ctx:      ConversationContext,
-    provider: AzureAIProvider,
+    provider: AIProvider,
     signal?:  AbortSignal,
     onDiff?:  (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<string> {
@@ -788,6 +810,7 @@ export class ConversationEngine {
 
       if (metrics) {
         this.ui.renderExecutionSummary(metrics);
+        await this.finalizeTurn(input, ctx, 'medium', metrics);
         if (timeline.length > 0) this.ui.renderTimeline(timeline);
       }
 

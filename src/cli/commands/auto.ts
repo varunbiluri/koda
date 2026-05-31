@@ -27,7 +27,7 @@ import chalk from 'chalk';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { configExists, loadConfig } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { createProvider } from '../../ai/providers/provider-factory.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { DagVerification } from '../../intelligence/dag-verification.js';
 import { RepoContextAnalyzer } from '../../intelligence/repo-context-analyzer.js';
@@ -39,6 +39,8 @@ import { RepoGraph } from '../../intelligence/repo-graph.js';
 import { ImpactAnalyzer } from '../../intelligence/impact-analyzer.js';
 import { failureAnalyzer } from '../../execution/failure-analyzer.js';
 import { loadIndexMetadata } from '../../store/index-store.js';
+import { ProductMetrics, DEFAULT_KEI_BASELINE_TOKENS } from '../../product/metrics.js';
+import { mergeChatMetrics, emptyChatMetrics, chatMetricsToTelemetry } from '../../product/task-telemetry.js';
 import { handleCliError } from '../errors.js';
 import { logger } from '../../utils/logger.js';
 
@@ -103,9 +105,15 @@ export function createAutoCommand(): Command {
         process.exit(1);
       }
 
+      let metrics: ProductMetrics | null = null;
+      try {
+        metrics = await ProductMetrics.load(rootPath);
+        metrics.taskStart('auto', task);
+      } catch { /* non-fatal */ }
+
       try {
         const config      = await loadConfig();
-        const provider    = new AzureAIProvider(config);
+        const provider    = createProvider(config);
         const repoEnv     = await RepoContextAnalyzer.analyze(rootPath);
         const memory      = await GlobalMemoryStore.load(rootPath);
         const learner     = await LearningLoop.load(rootPath);
@@ -147,6 +155,7 @@ export function createAutoCommand(): Command {
         let sameErrorCount  = 0;
         const seenFingerprints = new Set<string>();
         const startTime     = Date.now();
+        let runMetrics      = emptyChatMetrics();
 
         // ── Auto loop ───────────────────────────────────────────────────────
         while (iteration < maxIterations) {
@@ -188,7 +197,7 @@ export function createAutoCommand(): Command {
             : currentTask;
 
           try {
-            await engine.chat(
+            const chatMetrics = await engine.chat(
               systemHint,
               chatContext,
               [],
@@ -206,9 +215,8 @@ export function createAutoCommand(): Command {
               undefined,
               undefined,
               undefined,
-              undefined, // signal
               undefined,
-              // ── Part 5: Safe auto mode — impact-aware diff approval ────────
+              { route: 'cli', skipPlanning: true },
               async (filePath: string, oldContent: string, newContent: string) => {
                 filesWritten.push(filePath);
 
@@ -231,6 +239,7 @@ export function createAutoCommand(): Command {
                 return true;
               },
             );
+            runMetrics = mergeChatMetrics(runMetrics, chatMetrics);
           } catch (execErr) {
             console.error(chalk.red(`\n✗ Execution error: ${(execErr as Error).message}`));
           }
@@ -374,6 +383,19 @@ export function createAutoCommand(): Command {
           retries:      Math.max(0, iteration - 1),
         });
         await Promise.all([memory.save(), learner.save()]);
+
+        if (metrics) {
+          if (!metrics.getStore().keiBaselineMedianTokens) {
+            metrics.setKeiBaseline(DEFAULT_KEI_BASELINE_TOKENS);
+          }
+          metrics.taskComplete({
+            success: succeeded,
+            retries: Math.max(0, iteration - 1),
+            durationMs: elapsed,
+            telemetry: chatMetricsToTelemetry(runMetrics),
+          });
+          await metrics.flush();
+        }
 
         // ── Summary ───────────────────────────────────────────────────────
         const icon   = succeeded ? chalk.green('✔') : chalk.red('✗');

@@ -1,24 +1,38 @@
 /**
  * Tool output size limits for injection into LLM context.
  *
- * Tools themselves are unbounded — they can produce arbitrarily large outputs
- * which are stored in ToolResultIndex.  What the LLM actually receives is
- * determined by the HYBRID STRATEGY in ReasoningEngine.chat():
+ * Reference-first tools (read/explore/exec) inject compact refs above
+ * INLINE_THRESHOLD. Other tools use LARGE_OUTPUT_THRESHOLD.
  *
- *   output < INLINE_THRESHOLD (5 000 chars)
- *     → injected directly into the message history (fast path, no overhead)
- *
- *   output ≥ INLINE_THRESHOLD
- *     → stored as a ToolResultIndex reference; LLM receives a compact header +
- *       500-char preview.  Use grep_code / search_code to retrieve sections.
- *
- * TOOL_LIMITS entries are kept at Infinity to signal "no per-call truncation
- * at the tool boundary".  The threshold enforcement happens in the reasoning
- * engine, not here.
+ * Full outputs are stored in ToolResultIndex; the LLM fetches via get_tool_result.
  */
 
-/** Characters below which a tool result is injected inline into the LLM prompt. */
-export const INLINE_THRESHOLD = 5_000;
+/** Chars below which reference-first tools stay inline (errors, tiny outputs). */
+export const MIN_INLINE_CHARS = 200;
+
+/** Reference-first tools use refs at or above this size (aggressive context savings). */
+export const INLINE_THRESHOLD = MIN_INLINE_CHARS;
+
+/** Legacy threshold for tools not in REFERENCE_FIRST_TOOLS. */
+export const LARGE_OUTPUT_THRESHOLD = 5_000;
+
+/** Preview length in ref injection lines. */
+export const PREVIEW_CHARS = 120;
+
+/** Tools that prefer reference-first injection to save context. */
+export const REFERENCE_FIRST_TOOLS = new Set([
+  'read_file',
+  'grep_code',
+  'search_code',
+  'search_files',
+  'list_files',
+  'list_directory',
+  'git_diff',
+  'git_log',
+  'git_status',
+  'run_terminal',
+  'fetch_url',
+]);
 
 export const TOOL_LIMITS = {
   READ_FILE:    Infinity,

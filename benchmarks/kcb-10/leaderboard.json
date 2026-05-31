@@ -1,0 +1,126 @@
+[
+  {
+    "version": "0.1.2",
+    "runAt": "2026-05-31T08:22:04.136Z",
+    "taskCount": 10,
+    "successRate": 0.7,
+    "medianTokens": 37200,
+    "medianPromptTokens": 34750,
+    "medianRefRate": 0.585,
+    "kei": 140,
+    "baselineMedianTokens": 52000,
+    "results": [
+      {
+        "taskId": "kcb-01",
+        "kind": "fix",
+        "success": true,
+        "promptTokens": 28000,
+        "completionTokens": 2000,
+        "toolCalls": 12,
+        "refRate": 0.45,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 6
+      },
+      {
+        "taskId": "kcb-02",
+        "kind": "fix",
+        "success": true,
+        "promptTokens": 29500,
+        "completionTokens": 2100,
+        "toolCalls": 13,
+        "refRate": 0.48,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 7
+      },
+      {
+        "taskId": "kcb-03",
+        "kind": "fix",
+        "success": true,
+        "promptTokens": 31000,
+        "completionTokens": 2200,
+        "toolCalls": 14,
+        "refRate": 0.51,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 7
+      },
+      {
+        "taskId": "kcb-04",
+        "kind": "fix",
+        "success": true,
+        "promptTokens": 32500,
+        "completionTokens": 2300,
+        "toolCalls": 15,
+        "refRate": 0.54,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 8
+      },
+      {
+        "taskId": "kcb-05",
+        "kind": "add",
+        "success": true,
+        "promptTokens": 34000,
+        "completionTokens": 2400,
+        "toolCalls": 16,
+        "refRate": 0.5700000000000001,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 8
+      },
+      {
+        "taskId": "kcb-06",
+        "kind": "add",
+        "success": true,
+        "promptTokens": 35500,
+        "completionTokens": 2500,
+        "toolCalls": 17,
+        "refRate": 0.6,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 8
+      },
+      {
+        "taskId": "kcb-07",
+        "kind": "add",
+        "success": true,
+        "promptTokens": 37000,
+        "completionTokens": 2600,
+        "toolCalls": 18,
+        "refRate": 0.63,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 9
+      },
+      {
+        "taskId": "kcb-08",
+        "kind": "refactor",
+        "success": false,
+        "promptTokens": 38500,
+        "completionTokens": 2700,
+        "toolCalls": 19,
+        "refRate": 0.66,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 9
+      },
+      {
+        "taskId": "kcb-09",
+        "kind": "refactor",
+        "success": false,
+        "promptTokens": 40000,
+        "completionTokens": 2800,
+        "toolCalls": 20,
+        "refRate": 0.69,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 10
+      },
+      {
+        "taskId": "kcb-10",
+        "kind": "explain",
+        "success": false,
+        "promptTokens": 41500,
+        "completionTokens": 2900,
+        "toolCalls": 21,
+        "refRate": 0.72,
+        "toolResultsTotal": 14,
+        "toolResultsViaRef": 10
+      }
+    ],
+    "note": "Mock metrics — pass --live with provider config for real KCB-10."
+  }
+]

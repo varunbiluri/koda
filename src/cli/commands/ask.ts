@@ -4,7 +4,7 @@ import ora from 'ora';
 import { QueryEngine } from '../../search/query-engine.js';
 import { loadIndex } from '../../store/index-store.js';
 import { loadConfig, configExists } from '../../ai/config-store.js';
-import { AzureAIProvider } from '../../ai/providers/azure-provider.js';
+import { createProvider } from '../../ai/providers/provider-factory.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { handleCliError } from '../errors.js';
 
@@ -45,7 +45,7 @@ async function runAIAnalysis(query: string, index: any, limit: number): Promise<
 
   try {
     const config = await loadConfig();
-    const provider = new AzureAIProvider(config);
+    const provider = createProvider(config);
     const engine = new ReasoningEngine(index, provider);
 
     spinner.text = 'Searching codebase...';

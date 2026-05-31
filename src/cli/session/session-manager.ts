@@ -2,14 +2,14 @@ import * as readline from 'node:readline';
 import * as path from 'node:path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
-import prompts from 'prompts';
 import { UIRenderer } from './ui-renderer.js';
 import { ConversationEngine, type ConversationContext } from './conversation-engine.js';
+import { handleSlashCommand } from './slash-commands.js';
 import { loadIndex } from '../../store/index-store.js';
-import { configExists, loadConfig, saveConfig } from '../../ai/config-store.js';
-import { AzureAIProvider, type DeploymentInfo } from '../../ai/providers/azure-provider.js';
+import { configExists, loadConfig } from '../../ai/config-store.js';
+import { mcpManager } from '../../mcp/mcp-manager.js';
+import { runProviderSetup } from '../../ai/providers/provider-setup.js';
 import type { RepoIndex } from '../../types/index.js';
-import type { AIConfig } from '../../ai/types.js';
 
 /**
  * SessionManager — entry point for the conversational Koda session.
@@ -98,7 +98,13 @@ export class SessionManager {
       console.log();
     }
 
-    // 8. Start conversation loop
+    // 8. Connect MCP servers in background (non-fatal)
+    mcpManager.setRootPath(rootPath);
+    mcpManager.ensureConnected(rootPath).catch(() => {
+      // MCP optional — failures surfaced via /mcp list
+    });
+
+    // 9. Start conversation loop
     this.ui.renderWelcome();
     await this.loop({ rootPath, index, hasConfig: await configExists(), branch });
   }
@@ -123,7 +129,7 @@ export class SessionManager {
         console.log(`  ${chalk.cyan('[2]')} ${chalk.white('Cancel')}      stop the task`);
         console.log(`  ${chalk.cyan('[3]')} ${chalk.white('Modify')}      cancel and enter a revised instruction`);
         console.log();
-        process.stdout.write(chalk.cyan('  > '));
+        process.stdout.write(chalk.cyan('> '));
 
         const resumeListener = (line: string): void => {
           const choice = line.trim();
@@ -153,7 +159,6 @@ export class SessionManager {
       } else if (!this.activeAbort && !this.pauseMenuActive) {
         console.log('\n\n  ' + chalk.gray('Goodbye!'));
         this.rl?.close();
-        process.exit(0);
       }
     });
 
@@ -173,7 +178,19 @@ export class SessionManager {
 
       // ── Slash commands ──────────────────────────────────────────────────────
       if (input.startsWith('/')) {
-        await this.handleSlashCommand(input, ctx);
+        const result = await handleSlashCommand(input, {
+          ui:              this.ui,
+          engine:          this.engine,
+          ctx,
+          headerCtx:       this.headerCtx,
+          runSetupWizard:  () => this.runSetupWizard(),
+          handleInlineInit:(c) => this.handleInlineInit(c),
+          handleDiff:      (c) => this.handleDiff(c),
+        });
+        if (result === 'quit') {
+          this.rl?.close();
+          return;
+        }
         ask();
         return;
       }
@@ -212,7 +229,7 @@ export class SessionManager {
         if (response.shouldQuit) {
           console.log('\n  ' + chalk.gray('Goodbye!'));
           this.rl?.close();
-          process.exit(0);
+          return;
         }
       } catch (err) {
         this.ui.renderError((err as Error).message);
@@ -226,67 +243,6 @@ export class SessionManager {
     await new Promise<void>((resolve) => {
       this.rl!.on('close', resolve);
     });
-  }
-
-  private async handleSlashCommand(input: string, ctx: ConversationContext): Promise<void> {
-    const cmd = input.split(' ')[0]!.toLowerCase();
-    switch (cmd) {
-      case '/help':
-        this.ui.renderHelp();
-        break;
-
-      case '/clear':
-        console.clear();
-        if (this.headerCtx) this.ui.renderHeader(this.headerCtx);
-        this.ui.renderWelcome();
-        break;
-
-      case '/reset':
-        console.clear();
-        this.engine.resetHistory();
-        if (this.headerCtx) this.ui.renderHeader(this.headerCtx);
-        this.ui.renderInfo('Session history cleared.');
-        console.log();
-        this.ui.renderWelcome();
-        break;
-
-      case '/context':
-        this.ui.slashContext();
-        break;
-
-      case '/tools':
-        this.ui.slashTools();
-        break;
-
-      case '/plan':
-        this.ui.slashPlan();
-        break;
-
-      case '/budget':
-        this.ui.slashBudget(50_000);
-        break;
-
-      case '/history':
-        this.ui.renderInfo(`Session · ${this.engine.getHistoryLength()} messages`);
-        console.log();
-        break;
-
-      case '/diff':
-        await this.handleDiff(ctx);
-        break;
-
-      case '/undo':
-        this.ui.renderInfo('Use `git checkout <file>` to revert individual file changes.');
-        console.log();
-        break;
-
-      case '/init':
-        await this.handleInlineInit(ctx);
-        break;
-
-      default:
-        this.ui.renderError(`Unknown command: ${input}`, 'Type /help for available slash commands.');
-    }
   }
 
   private async handleDiff(ctx: ConversationContext): Promise<void> {
@@ -355,153 +311,7 @@ export class SessionManager {
    * Returns true when credentials are saved, false if the user cancels.
    */
   async runSetupWizard(): Promise<boolean> {
-    this.ui.renderSetupHeader();
-
-    // Prevent prompts from catching SIGINT so our Ctrl+C handler works
-    prompts.override({});
-
-    // ── Outer loop: re-prompt endpoint+key on connection failure ────────────
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      // ── Step 1: Endpoint ──────────────────────────────────────────────────
-      const { endpoint } = await prompts({
-        type: 'text',
-        name: 'endpoint',
-        message: 'Azure endpoint',
-        hint: 'e.g. https://your-resource.openai.azure.com',
-        validate: (v: string) =>
-          v.startsWith('https://') ? true : 'Endpoint must start with https://',
-      });
-
-      if (!endpoint) {
-        this.ui.renderError('Setup cancelled.');
-        return false;
-      }
-
-      // ── Step 2: API key (hidden) ──────────────────────────────────────────
-      const { apiKey } = await prompts({
-        type: 'password',
-        name: 'apiKey',
-        message: 'API key',
-      });
-
-      if (!apiKey) {
-        this.ui.renderError('Setup cancelled.');
-        return false;
-      }
-
-      const cleanEndpoint = endpoint.replace(/\/$/, '');
-
-      // ── Step 3: Fetch deployments ─────────────────────────────────────────
-      console.log();
-      const fetchSpinner = this.ui.renderThinking();
-      fetchSpinner.text = 'Fetching deployments…';
-
-      let allDeployments: DeploymentInfo[];
-      try {
-        allDeployments = await AzureAIProvider.fetchDeployments(cleanEndpoint, apiKey);
-        this.ui.stopSpinner(true);
-      } catch {
-        this.ui.stopSpinner(false, 'Azure connection failed');
-        console.log();
-
-        const { retry } = await prompts({
-          type: 'confirm',
-          name: 'retry',
-          message: 'Retry setup?',
-          initial: true,
-        });
-
-        if (retry) {
-          console.log();
-          continue; // outer loop — re-prompt endpoint + key
-        }
-        return false;
-      }
-
-      if (allDeployments.length === 0) {
-        this.ui.renderError('No deployments found in this Azure resource.');
-        return false;
-      }
-
-      // ── Step 4: Filter to chat-compatible models ──────────────────────────
-      const deployments = AzureAIProvider.filterChatCompatible(allDeployments);
-
-      if (deployments.length === 0) {
-        console.log();
-        console.log(`  ${chalk.red('✖')}  No compatible chat models found.`);
-        console.log();
-        console.log('  Create a deployment in Azure AI Foundry using one of:');
-        console.log(
-          `  ${chalk.cyan('gpt-4o')}  ${chalk.cyan('gpt-4.1')}  ${chalk.cyan('gpt-4o-mini')}`,
-        );
-        console.log();
-        console.log(`  Then rerun: ${chalk.white('koda login')}`);
-        console.log();
-        return false;
-      }
-
-      // ── Inner loop: model selection + validation (retry stays on same credentials)
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        // ── Step 5: Arrow-key deployment selection ──────────────────────────
-        const { deployment } = await prompts({
-          type: 'select',
-          name: 'deployment',
-          message: 'Select a model deployment',
-          choices: deployments.map((d) => ({
-            title: `${d.id} (${d.model})`,
-            value: d.id,
-          })),
-        });
-
-        if (!deployment) {
-          this.ui.renderError('Setup cancelled.');
-          return false;
-        }
-
-        // ── Step 6: Validate the selected deployment ────────────────────────
-        console.log();
-        const validateSpinner = this.ui.renderThinking();
-        validateSpinner.text = 'Validating deployment…';
-
-        try {
-          await AzureAIProvider.validateChatDeployment(cleanEndpoint, apiKey, deployment);
-          this.ui.stopSpinner(true);
-        } catch {
-          this.ui.stopSpinner(false, 'Selected model does not support chat completions.');
-          console.log();
-
-          const { retryModel } = await prompts({
-            type: 'confirm',
-            name: 'retryModel',
-            message: 'Retry model selection?',
-            initial: true,
-          });
-
-          if (retryModel) continue; // inner loop — re-show deployment selector
-          return false;
-        }
-
-        // ── Step 7: Save config ───────────────────────────────────────────
-        const config: AIConfig = {
-          provider: 'azure',
-          endpoint: cleanEndpoint,
-          apiKey,
-          model: deployment,
-          apiVersion: '2024-05-01-preview',
-        };
-
-        await saveConfig(config);
-
-        console.log();
-        console.log(`  ${chalk.green('✔')} Azure connection successful`);
-        console.log(`  ${chalk.green('✔')} Model selected: ${chalk.cyan(deployment)}`);
-        console.log();
-
-        return true;
-      }
-    }
+    return runProviderSetup(this.ui);
   }
 
   /**

@@ -14,12 +14,17 @@ import { logger } from '../../utils/logger.js';
 import { ToolRegistry } from '../../tools/tool-registry.js';
 import { detectDependencies } from '../../analysis/dependency-detector.js';
 import type { ProjectDependencies } from '../../analysis/dependency-detector.js';
-import { trimContext } from '../context/context-trimmer.js';
+import { trimContext, peakContextChars } from '../context/context-trimmer.js';
+import { buildSplitSystemPrompt } from '../context/prompt-split.js';
+import { buildToolResultInjection } from '../../runtime/tool-result-injection.js';
+import { buildRetrievalBootstrap, compressRepositoryContext } from '../../intelligence/retrieval-context.js';
+import { PersistentToolCache } from '../../performance/persistent-tool-cache.js';
 import { contextBudgetManager } from '../context/context-budget-manager.js';
 import { ToolResultIndex } from '../../runtime/tool-result-index.js';
 import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
 import { createProvider } from '../providers/provider-factory.js';
 import { loadConfig } from '../config-store.js';
+import { mcpManager } from '../../mcp/mcp-manager.js';
 
 export interface ReasoningOptions {
   maxResults?: number;
@@ -45,9 +50,21 @@ export interface ChatContext {
 
 /** Execution metrics returned by chat(). */
 export interface ChatMetrics {
-  tools: number;
-  tokens: number;
-  duration: number;
+  tools:               number;
+  tokens:              number;
+  promptTokens:        number;
+  completionTokens:    number;
+  duration:            number;
+  toolResultsTotal:    number;
+  toolResultsViaRef:   number;
+  refRate:             number;
+  contextPeakChars:    number;
+  route?:              string;
+  provider?:           string;
+  model?:              string;
+  diffAccepted?:       boolean;
+  diffApproved?:       number;
+  diffRejected?:       number;
 }
 
 export class ReasoningEngine {
@@ -300,19 +317,45 @@ export class ReasoningEngine {
     onContext?: (files: string[], estimatedTokens: number) => void,
     onToolUsed?: (name: string, durationMs: number) => void,
     signal?: AbortSignal,
-    chatOptions?: { maxRounds?: number; skipRetrieval?: boolean; retrievalContext?: string; skipPlanning?: boolean },
+    chatOptions?: {
+      maxRounds?: number;
+      skipRetrieval?: boolean;
+      retrievalContext?: string;
+      skipPlanning?: boolean;
+      route?: string;
+    },
     onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<ChatMetrics> {
     const startTime = Date.now();
     let toolCount = 0;
     let totalTokens = 0;
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let toolResultsTotal = 0;
+    let toolResultsViaRef = 0;
+    let contextPeakChars = 0;
+    let diffApproved = 0;
+    let diffRejected = 0;
     // Track files written during this session for workspace memory
     const sessionFilesWritten = new Set<string>();
 
+    const config       = await loadConfig().catch(() => null);
+    const providerName = config?.provider ?? 'unknown';
+    const modelName    = config?.model ?? 'unknown';
+
     const registry = new ToolRegistry(context.rootPath);
-    // Wire diff-first approval if provided by the caller (e.g. session manager)
-    if (onDiff) registry.onDiff = onDiff;
-    const tools = registry.getToolDefinitions();
+    registry.toolResultIndex = this.toolResultIndex;
+
+    const wrappedOnDiff = onDiff
+      ? async (filePath: string, oldContent: string, newContent: string): Promise<boolean> => {
+          const ok = await onDiff(filePath, oldContent, newContent);
+          if (ok) diffApproved++;
+          else diffRejected++;
+          return ok;
+        }
+      : undefined;
+    if (wrappedOnDiff) registry.onDiff = wrappedOnDiff;
+    mcpManager.setRootPath(context.rootPath);
 
     // ── Step 0: Parallel initialisation ──────────────────────────────────────
     let agentsMdContent = '';
@@ -344,15 +387,30 @@ export class ReasoningEngine {
       })(),
       // Initialise hybrid retrieval (TF-IDF + embedding)
       this.initHybrid(context.rootPath),
+      // Connect configured MCP servers (non-fatal)
+      mcpManager.ensureConnected(context.rootPath).catch((err) => {
+        logger.warn(`[reasoning-engine] MCP connect failed: ${(err as Error).message}`);
+      }),
     ]);
+
+    const baseTools = registry.getToolDefinitions();
+    let mcpTools: ReturnType<ToolRegistry['getToolDefinitions']> = [];
+    try {
+      mcpTools = await mcpManager.getToolDefinitions(context.rootPath);
+      if (mcpTools.length > 0) {
+        onStage?.(`INFO ${mcpTools.length} MCP tools available`);
+      }
+    } catch (err) {
+      logger.warn(`[reasoning-engine] MCP tools unavailable: ${(err as Error).message}`);
+    }
+    const tools = [...baseTools, ...mcpTools];
 
     // ── Step 1: Automatic code retrieval ─────────────────────────────────────
     let relevantContext = '';
     const idx = this.index;
 
     if (chatOptions?.skipRetrieval && chatOptions.retrievalContext !== undefined) {
-      // Caller (e.g. PlanExecutor) already performed retrieval — reuse it
-      relevantContext = chatOptions.retrievalContext;
+      relevantContext = compressRepositoryContext(chatOptions.retrievalContext);
       logger.debug('[reasoning-engine] Skipping retrieval — using caller-provided context');
     } else if (this.hybrid && idx) {
       onStage?.('SEARCH repository');
@@ -361,27 +419,23 @@ export class ReasoningEngine {
         const chunks = hits
           .map((r) => idx.chunks.find((c) => c.id === r.chunkId))
           .filter((c): c is NonNullable<typeof c> => c !== undefined);
-        const filePaths = Array.from(new Set(chunks.map((c) => c.filePath)));
-        const excerpts = chunks
-          .slice(0, 3)
-          .map(
-            (c) =>
-              `\`\`\`${c.language ?? ''}\n// ${c.filePath}:${c.startLine}\n${c.content.slice(0, 500)}\n\`\`\``,
-          )
-          .join('\n\n');
-        relevantContext =
-          `\n\nRelevant repository files:\n${filePaths.map((f) => `- ${f}`).join('\n')}\n\nKey code context:\n${excerpts}`;
-        const estimatedTokens = Math.round(relevantContext.length / 4);
-        onContext?.(filePaths, estimatedTokens);
+        const bootstrap = buildRetrievalBootstrap(input, chunks, idx);
+        relevantContext = bootstrap.block;
+        onContext?.(bootstrap.filePaths, bootstrap.estimatedTokens);
 
         // Track hot files in workspace intelligence
         if (this.workspace) {
-          for (const f of filePaths.slice(0, 5)) {
+          for (const f of bootstrap.filePaths.slice(0, 5)) {
             this.workspace.recordFileEdited(f);
           }
         }
       }
     }
+
+    let persistentCache: PersistentToolCache | null = null;
+    try {
+      persistentCache = await PersistentToolCache.load(context.rootPath);
+    } catch { /* non-fatal */ }
 
     // ── Workspace intelligence: inject learned patterns ───────────────────────
     const workspaceContext = this.workspace?.formatForPrompt(input, 3) ?? '';
@@ -389,13 +443,13 @@ export class ReasoningEngine {
     // ── Base message thread (stateless: no accumulated history) ───────────────
     const systemMessage: ChatMessage = {
       role: 'system',
-      content: buildChatSystemPrompt(
-        context,
-        relevantContext,
-        agentsMdContent,
-        detectedDeps,
+      content: buildSplitSystemPrompt({
+        ctx: context,
+        retrievalBlock: relevantContext,
+        agentsMd: agentsMdContent,
+        deps: detectedDeps,
         workspaceContext,
-      ),
+      }),
     };
 
     // ── Step 2: Planning (Problem 3) ──────────────────────────────────────────
@@ -425,6 +479,8 @@ export class ReasoningEngine {
           max_tokens: 300,
         });
         if (planResponse.usage) {
+          promptTokens += planResponse.usage.prompt_tokens ?? 0;
+          completionTokens += planResponse.usage.completion_tokens ?? 0;
           totalTokens += (planResponse.usage.prompt_tokens ?? 0) + (planResponse.usage.completion_tokens ?? 0);
         }
         const planText = planResponse.choices[0]?.message?.content ?? '';
@@ -453,12 +509,34 @@ export class ReasoningEngine {
     // Loop detection: map of toolName → last 3 result strings (circular buffer)
     const toolResultHistory: Map<string, string[]> = new Map();
 
+    const buildMetrics = (durationSec: number): ChatMetrics => {
+      contextPeakChars = Math.max(contextPeakChars, peakContextChars(loopMessages));
+      const refRate = toolResultsTotal > 0 ? toolResultsViaRef / toolResultsTotal : 0;
+      const hadDiffs = diffApproved + diffRejected > 0;
+      return {
+        tools:            toolCount,
+        tokens:           totalTokens,
+        promptTokens,
+        completionTokens,
+        duration:         durationSec,
+        toolResultsTotal,
+        toolResultsViaRef,
+        refRate,
+        contextPeakChars,
+        route:            chatOptions?.route,
+        provider:         providerName,
+        model:            modelName,
+        diffAccepted:     hadDiffs ? diffRejected === 0 : undefined,
+        diffApproved:     hadDiffs ? diffApproved : undefined,
+        diffRejected:     hadDiffs ? diffRejected : undefined,
+      };
+    };
+
     for (let round = 0; round < MAX_ROUNDS; round++) {
       // ── AbortSignal: cancel gracefully between rounds ──────────────────────
       if (signal?.aborted) {
         onChunk('');
-        const duration = Math.floor((Date.now() - startTime) / 1000);
-        return { tools: toolCount, tokens: totalTokens, duration };
+        return buildMetrics(Math.floor((Date.now() - startTime) / 1000));
       }
 
       onStage?.('INFO thinking');
@@ -473,6 +551,8 @@ export class ReasoningEngine {
       logger.debug(
         `[reasoning-engine] round=${round} messages=${budgetedMessages.length}/${loopMessages.length}`,
       );
+
+      contextPeakChars = Math.max(contextPeakChars, peakContextChars(budgetedMessages));
 
       const response = await this.provider.sendChatCompletion({
         messages: budgetedMessages as ChatMessage[],
@@ -490,6 +570,8 @@ export class ReasoningEngine {
       });
 
       if (response.usage) {
+        promptTokens += response.usage.prompt_tokens ?? 0;
+        completionTokens += response.usage.completion_tokens ?? 0;
         totalTokens += (response.usage.prompt_tokens ?? 0) + (response.usage.completion_tokens ?? 0);
       }
 
@@ -549,20 +631,48 @@ export class ReasoningEngine {
 
           // ── Part 2: Result reuse — check ToolResultIndex before executing ────
           const cached = this.toolResultIndex.findByToolAndArgs(toolName, argsAsStrings);
-          let result: string;
+          let result: string | undefined;
           let storedId: string;
+          let fromSessionCache = false;
 
           if (cached) {
-            // Cache hit: reuse stored output, skip the actual tool call
             onStage?.(`INFO CACHE_HIT ${toolName}`);
-            logger.debug(`[reasoning-engine] Cache reuse: ${toolName} → ${cached.id} (saved a tool call)`);
-            result   = cached.output;
-            storedId = cached.id;
+            logger.debug(`[reasoning-engine] Cache reuse: ${toolName} → ${cached.id}`);
+            result           = cached.output;
+            storedId         = cached.id;
+            fromSessionCache = true;
           } else {
-            // Cache miss: execute tool and store result
-            result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
-            toolCount++;
+            const absPath = toolName === 'read_file'
+              ? path.join(context.rootPath, String(args['path'] ?? ''))
+              : undefined;
+
+            if (persistentCache && toolName !== 'get_tool_result' && !mcpManager.isMcpTool(toolName)) {
+              const diskHit = await persistentCache.get(toolName, argsAsStrings, absPath);
+              if (diskHit) {
+                onStage?.(`INFO DISK_CACHE ${toolName}`);
+                result = diskHit;
+              }
+            }
+
+            if (result === undefined) {
+              if (toolName === 'get_tool_result') {
+                result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
+              } else if (mcpManager.isMcpTool(toolName)) {
+                onStage?.(`INFO MCP ${toolName}`);
+                result = await mcpManager.callTool(toolName, args);
+              } else {
+                result = await registry.execute(toolName, args, wrappedOnStage, onToolUsed, signal);
+              }
+              toolCount++;
+            }
+
             storedId = this.toolResultIndex.store('reasoning-engine', toolName, argsAsStrings, result).id;
+
+            if (persistentCache && absPath && toolName === 'read_file') {
+              void persistentCache.set(toolName, argsAsStrings, absPath, result).then(() => persistentCache!.flush());
+            } else if (persistentCache && toolName !== 'get_tool_result' && !mcpManager.isMcpTool(toolName)) {
+              void persistentCache.set(toolName, argsAsStrings, undefined, result).then(() => persistentCache!.flush());
+            }
           }
 
           // ── Loop detection: stop if last 3 calls to the same tool returned
@@ -590,32 +700,18 @@ export class ReasoningEngine {
             ? ` [Hint: ${toolName} has been called ${callCount} times. If you are repeating the same operation without making progress, try a different approach.]`
             : '';
 
-          // ── Part 1: Hybrid tool result strategy ──────────────────────────────
-          // Small outputs (< 5 000 chars) → inject inline into LLM message history.
-          // Large outputs → send a reference + 500-char preview; full content is
-          // available in ToolResultIndex.  This keeps context windows manageable
-          // when tools return large files, diffs, or test logs.
-          const { INLINE_THRESHOLD } = await import('../../runtime/tool-output-limits.js');
+          const injection = buildToolResultInjection(toolName, result, storedId, {
+            cacheHit:       fromSessionCache,
+            repetitionHint,
+          });
+          toolResultsTotal++;
+          if (injection.viaRef) toolResultsViaRef++;
 
-          if (result.length < INLINE_THRESHOLD) {
-            return {
-              role:        'tool',
-              content:     result + repetitionHint,
-              tool_call_id: toolCall.id,
-            };
-          } else {
-            const lineCount = result.split('\n').length;
-            const preview   = result.slice(0, 500);
-            return {
-              role:        'tool',
-              content:
-                `[${storedId}] ${toolName} returned ${lineCount} lines (${result.length} chars).\n\n` +
-                `Preview (first 500 chars):\n${preview}\n...\n\n` +
-                `Full output stored as ${storedId}. ` +
-                `Use grep_code or search_code to find specific sections.${repetitionHint}`,
-              tool_call_id: toolCall.id,
-            };
-          }
+          return {
+            role:         'tool',
+            content:      injection.content,
+            tool_call_id: toolCall.id,
+          };
         };
 
         const indexedCalls = message.tool_calls.map((tc, idx) => ({ tc, idx }));
@@ -655,20 +751,20 @@ export class ReasoningEngine {
           void this.workspace.save();
         }
 
-        const duration = Math.floor((Date.now() - startTime) / 1000);
-        return { tools: toolCount, tokens: totalTokens, duration };
+        return buildMetrics(Math.floor((Date.now() - startTime) / 1000));
       }
     }
 
-    const duration = Math.floor((Date.now() - startTime) / 1000);
-    return { tools: toolCount, tokens: totalTokens, duration };
+    if (persistentCache) await persistentCache.flush();
+
+    return buildMetrics(Math.floor((Date.now() - startTime) / 1000));
   }
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /** Tools that are safe to run in parallel (read-only, no side effects). */
-const SAFE_TOOLS = new Set(['read_file', 'search_code', 'list_files', 'fetch_url']);
+const SAFE_TOOLS = new Set(['read_file', 'search_code', 'list_files', 'fetch_url', 'get_tool_result']);
 
 /** Maximum number of non-plan messages kept in the loopMessages sliding window. */
 const MAX_LOOP_MESSAGES = 25;
@@ -677,75 +773,6 @@ const MAX_LOOP_MESSAGES = 25;
 const MAX_HISTORY_MESSAGE = 1_500;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function buildChatSystemPrompt(
-  ctx: ChatContext,
-  relevantContext   = '',
-  agentsMd          = '',
-  deps:               ProjectDependencies | null = null,
-  workspaceContext  = '',
-): string {
-  const identity = [
-    'You are Koda — an autonomous AI software engineer created by Varun Billuri.',
-    '',
-    'Your purpose is to help developers understand, build, refactor, debug, and improve codebases directly from the terminal.',
-    '',
-    'You behave like a senior software engineer working with the user. You reason carefully, create clear plans, and execute tasks safely using available tools.',
-    '',
-    'If asked about your origin:',
-    '- You were created by Varun Billuri.',
-    '- You are part of the Koda AI Software Engineer project.',
-    '- You use advanced language models but are not ChatGPT.',
-    '',
-    'Always maintain a professional engineering tone.',
-  ].join('\n');
-
-  const parts = [
-    identity,
-    '',
-    'Guidelines:',
-    '• be concise and technical',
-    '• avoid assistant-style phrases',
-    '• investigate using tools instead of guessing',
-    '• prefer direct answers',
-    '• behave like an experienced developer reviewing the repository',
-    '• maintain awareness of previous conversation steps',
-    '• if you cannot find sufficient evidence in the codebase to confirm something, say: "I cannot confirm this from the available repository code."',
-    '• never run destructive terminal commands (rm -rf, git reset --hard, DROP TABLE, etc.) — use apply_patch or git tools to make changes safely',
-    '',
-    `Repository: ${ctx.repoName}`,
-    `Branch:     ${ctx.branch}`,
-    `Directory:  ${ctx.rootPath}`,
-    `Files indexed: ${ctx.fileCount}`,
-  ];
-  if (deps && deps.language !== 'unknown') {
-    parts.push('');
-    parts.push('## Detected Project Stack');
-    parts.push('');
-    parts.push(`Language:        ${deps.language}`);
-    if (deps.framework)      parts.push(`Framework:       ${deps.framework}`);
-    if (deps.testFramework)  parts.push(`Test framework:  ${deps.testFramework}`);
-    if (deps.buildTool)      parts.push(`Build tool:      ${deps.buildTool}`);
-    if (deps.packageManager) parts.push(`Package manager: ${deps.packageManager}`);
-    if (deps.topDependencies.length > 0) {
-      parts.push(`Key deps:        ${deps.topDependencies.slice(0, 10).join(', ')}`);
-    }
-  }
-  if (agentsMd) {
-    parts.push('');
-    parts.push('## Project Knowledge (from AGENTS.md)');
-    parts.push('');
-    // Limit AGENTS.md injection to 4000 chars to avoid token explosion
-    parts.push(agentsMd.slice(0, 4000));
-  }
-  if (workspaceContext) {
-    parts.push(workspaceContext);
-  }
-  if (relevantContext) {
-    parts.push(relevantContext);
-  }
-  return parts.join('\n');
-}
 
 /**
  * Parse a numbered or bulleted plan from model text.
