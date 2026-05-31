@@ -38,7 +38,7 @@ koda            # interactive agent
 git add -p && koda   # then /commit inside session
 ```
 
-GitHub: https://github.com/varunbiluri/koda · Architecture: [ARCHITECTURE.md](https://github.com/varunbiluri/koda/blob/main/ARCHITECTURE.md)
+GitHub: https://github.com/varunbiluri/koda · Architecture: [ARCHITECTURE.md](https://github.com/varunbiluri/koda/blob/main/docs/ARCHITECTURE.md)
 
 ---
 

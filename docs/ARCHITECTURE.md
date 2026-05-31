@@ -154,8 +154,8 @@ Key suites: `tests/cli/session/`, `tests/ai/`, `tests/mcp/`.
 
 ## Related docs
 
-- `CLAUDE.md` — phase overview and CLI reference
-- `AGENTS.md` — auto-generated repo map for AI agents
+- [CLAUDE.md](CLAUDE.md) — phase overview and CLI reference
+- [AGENTS.md](AGENTS.md) — auto-generated repo map for AI agents
 - `README.md` — user-facing quick start + **Works today / Roadmap**
 
 ## License

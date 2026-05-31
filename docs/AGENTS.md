@@ -64,9 +64,9 @@
 Files containing AI prompt definitions:
 
 - `.github/ISSUE_TEMPLATE/bug_report.md`
-- `AGENTS.md`
-- `CHANGELOG.md`
-- `CLAUDE.md`
+- `docs/AGENTS.md`
+- `docs/CHANGELOG.md`
+- `docs/CLAUDE.md`
 - `README.md`
 - `src/agents/architecture-agent.ts`
 - `src/agents/supervisor-agent.ts`
