@@ -12,6 +12,7 @@ WHITE=$'\033[97m'
 BOLD=$'\033[1m'
 RESET=$'\033[0m'
 
+# pause sleeps for a specified number of seconds (default 0.8) to create brief pauses in the demo output.
 pause() { sleep "${1:-0.8}"; }
 
 clear

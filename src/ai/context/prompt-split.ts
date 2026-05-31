@@ -30,7 +30,12 @@ export interface DynamicPromptInput {
   workspaceContext?: string;
 }
 
-/** Per-turn dynamic system suffix. */
+/**
+ * Builds the per-turn dynamic system prompt block describing the repository and optional contextual sections.
+ *
+ * @param input - Inputs for the dynamic block. `input.ctx` must include `repoName`, `branch`, `rootPath`, and `fileCount`. Optional fields: `retrievalBlock`, `agentsMd`, `deps`, and `workspaceContext`.
+ * @returns The assembled dynamic system block as a newline-joined string containing repository/branch/directory/file count and any provided optional sections (`Stack`, a truncated `AGENTS.md`, `workspaceContext`, and `retrievalBlock`).
+ */
 export function buildDynamicSystemBlock(input: DynamicPromptInput): string {
   const { ctx, retrievalBlock, agentsMd, deps, workspaceContext } = input;
   const parts: string[] = [
@@ -58,6 +63,12 @@ export function buildDynamicSystemBlock(input: DynamicPromptInput): string {
   return parts.join('\n');
 }
 
+/**
+ * Constructs the full system prompt by appending the per-turn dynamic block to the stable system core.
+ *
+ * @param input - Per-turn inputs (chat context and optional dynamic blocks such as retrieval results, AGENTS.md excerpt, dependencies, and workspace context) used to build the dynamic system block
+ * @returns The complete system prompt string: the persistent STATIC_SYSTEM_CORE followed immediately by the dynamic system block built from `input`
+ */
 export function buildSplitSystemPrompt(input: DynamicPromptInput): string {
   return STATIC_SYSTEM_CORE + buildDynamicSystemBlock(input);
 }

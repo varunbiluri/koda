@@ -9,6 +9,18 @@ export interface ReadFileOptions {
   endLine?:   number;
 }
 
+/**
+ * Read a UTF‑8 file and optionally return a specific line range with a header.
+ *
+ * When `opts.startLine` or `opts.endLine` is provided, line bounds are clamped to the file's line count and the function returns the requested slice prefixed with a header of the form `// filePath:start-end (N lines)\n`. If neither option is provided, the full file content is returned.
+ *
+ * @param filePath - Path to the target file (resolved against `rootPath`)
+ * @param rootPath - Base directory used to resolve `filePath`
+ * @param opts - Optional line-range selection:
+ *   - `startLine` (1-based) — minimum start is 1
+ *   - `endLine` (1-based) — maximum end is the file's last line
+ * @returns A ToolResult whose `data` is the file content, or when a range is requested, the header plus the selected lines. On failure `error` contains a diagnostic message (for example when the computed start exceeds the file length).
+ */
 export async function readFile(
   filePath: string,
   rootPath: string,

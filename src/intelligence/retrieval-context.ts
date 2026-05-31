@@ -19,8 +19,15 @@ const MAX_FILES  = 8;
 const MAX_SYMBOLS = 12;
 
 /**
- * Build a paths + symbols bootstrap from retrieval hits.
- * No code excerpts — exploration happens via tools.
+ * Create a compact, symbol-aware bootstrap used to seed an agent prompt from retrieval hits.
+ *
+ * Produces a markdown block listing relevant file paths, key symbols, and optional related modules,
+ * along with the selected file paths and an estimated token count.
+ *
+ * @param query - The user query used to focus the bootstrap content
+ * @param chunks - Retrieved code chunks used to derive file paths and key symbols
+ * @param index - Optional repository index used to compute related modules; pass `null` to omit related modules
+ * @returns A RetrievalBootstrap containing the markdown `block`, the selected `filePaths`, and `estimatedTokens`
  */
 export function buildRetrievalBootstrap(
   query: string,
@@ -73,7 +80,14 @@ export function buildRetrievalBootstrap(
   };
 }
 
-/** Heuristic: modules whose path segments overlap query terms. */
+/**
+ * Selects up to five repository module paths whose file paths overlap significant terms from the query.
+ *
+ * @param query - The user query used to extract significant search terms (words longer than 3 characters)
+ * @param index - Repository index containing a list of files to scan for matching paths
+ * @param exclude - File paths to ignore when selecting related modules
+ * @returns An array of unique module identifiers (the first two path segments joined with `/`, or the full path if shorter), limited to at most five entries
+ */
 function findRelatedModules(query: string, index: RepoIndex, exclude: string[]): string[] {
   const terms = new Set(
     query.toLowerCase().split(/\W+/).filter((w) => w.length > 3),
@@ -98,7 +112,17 @@ function findRelatedModules(query: string, index: RepoIndex, exclude: string[]):
   return Array.from(modules);
 }
 
-/** Compress plan/repository context blocks injected into step prompts. */
+/**
+ * Reduce a repository or plan context string to a compact form suitable for step prompts.
+ *
+ * When the input exceeds `maxChars`, the result is a short header followed by up to 15
+ * list-style lines (lines starting with `* ` or `- `) if present; otherwise a truncated
+ * snippet of the original text with an explicit truncation marker.
+ *
+ * @param raw - The original repository or plan context text
+ * @param maxChars - Maximum allowed characters for the output (default: 2000)
+ * @returns A compressed context string no longer than `maxChars` that preserves list-like path lines when available, or a truncated snippet with a header and truncation marker otherwise
+ */
 export function compressRepositoryContext(raw: string, maxChars = 2_000): string {
   if (raw.length <= maxChars) return raw;
 

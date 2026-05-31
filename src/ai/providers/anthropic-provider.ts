@@ -34,6 +34,12 @@ interface AnthropicResponse {
   };
 }
 
+/**
+ * Converts tool definitions into Anthropic-compatible tool descriptors.
+ *
+ * @param tools - Optional array of tool definitions provided to the AI.
+ * @returns An array of objects each containing `name`, `description`, and `input_schema` for Anthropic, or `undefined` when `tools` is empty or not provided.
+ */
 function toAnthropicTools(tools?: ToolDefinitionForAI[]): Array<{
   name: string;
   description: string;
@@ -47,6 +53,14 @@ function toAnthropicTools(tools?: ToolDefinitionForAI[]): Array<{
   }));
 }
 
+/**
+ * Convert internal chat messages into Anthropic-compatible system text and message blocks.
+ *
+ * The function concatenates `system`-role contents into a single system string (separated by double newlines), batches consecutive tool result messages into `tool_result` content blocks emitted as a user message, preserves user messages as Anthropic `user` messages, and represents assistant content and assistant tool calls as `text` and `tool_use` content blocks respectively.
+ *
+ * @param messages - Array of internal `ChatMessage` objects to transform
+ * @returns An object with an optional `system` string and a `messages` array of `AnthropicMessage` ready for the Anthropic API
+ */
 function toAnthropicMessages(messages: ChatMessage[]): {
   system?: string;
   messages: AnthropicMessage[];
@@ -111,6 +125,12 @@ function toAnthropicMessages(messages: ChatMessage[]): {
   return { system: systemParts.join('\n\n') || undefined, messages: out };
 }
 
+/**
+ * Convert an Anthropic /v1/messages response into the local ChatCompletionResponse shape.
+ *
+ * @param data - The Anthropic response object to convert.
+ * @returns A ChatCompletionResponse containing a single assistant choice with any extracted text, tool calls (if present), mapped finish reason, and token usage when available.
+ */
 function fromAnthropicResponse(data: AnthropicResponse): ChatCompletionResponse {
   const toolCalls: ToolCall[] = [];
   let textContent = '';

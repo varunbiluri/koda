@@ -40,6 +40,15 @@ export const askCommand = new Command('ask')
     }
   });
 
+/**
+ * Performs an AI-powered analysis for a query against the repository index, streams the generated answer to stdout, and prints analysis metadata; on failure it falls back to the search-only results.
+ *
+ * Attempts to load AI configuration and provider, runs a streaming analysis limited by `limit`, writes chunks to stdout as they arrive, and prints summary metadata (files analyzed, code chunks, and a context-truncated warning when applicable). If the AI analysis fails, it prints a notice and invokes the search-only fallback.
+ *
+ * @param query - The user's query string to analyze against the codebase
+ * @param index - Repository index containing searchable code chunks and metadata used by the reasoning engine
+ * @param limit - Maximum number of results or code contexts the analysis should consider
+ */
 async function runAIAnalysis(query: string, index: any, limit: number): Promise<void> {
   const spinner = ora('Analyzing repository...').start();
 

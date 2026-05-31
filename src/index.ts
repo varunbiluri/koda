@@ -8,6 +8,13 @@ process.on('unhandledRejection', (err) => {
   logger.error('UNHANDLED PROMISE', err);
 });
 
+/**
+ * Dispatches the CLI startup flow based on command-line arguments.
+ *
+ * If `--version` or `-V` is present, writes the package version to stdout and exits early.
+ * If no additional arguments are provided, starts an interactive session in the current working directory.
+ * Otherwise, constructs and runs the CLI command parser with the provided arguments.
+ */
 async function run(): Promise<void> {
   // Fast exit for --version / -V before loading anything heavy
   if (process.argv.includes('--version') || process.argv.includes('-V')) {

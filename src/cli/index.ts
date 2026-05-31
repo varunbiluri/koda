@@ -32,6 +32,16 @@ import { createUpdateCommand } from './commands/update.js';
 import { createChatCommand } from './commands/chat.js';
 import { createMcpCommand } from './commands/mcp.js';
 
+/**
+ * Create and configure the top-level `koda` CLI command with version, description, and all built-in subcommands.
+ *
+ * Registers the interactive agent as the primary UX and adds commands implementing core developer workflows,
+ * indexing, AI analysis, multi-agent execution, self-improvement and observability, hierarchical intelligence,
+ * enterprise repository features, developer platform and IDE integrations, conversational CLI, autonomous systems,
+ * and feedback/update flows.
+ *
+ * @returns A configured Commander `Command` instance for the `koda` CLI
+ */
 export function createProgram(): Command {
   const program = new Command('koda')
     .version(VERSION)

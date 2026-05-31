@@ -53,6 +53,14 @@ import { handleCliError } from '../errors.js';
 
 const DEFAULT_ITERATIONS = 2;
 
+/**
+ * Create the `add` CLI command that plans, implements, tests, and verifies a new feature autonomously.
+ *
+ * The command accepts a feature description argument and provides options for max verification iterations,
+ * skipping test generation, showing planning reasoning, reminding to commit, and skipping verification.
+ *
+ * @returns The configured Commander `Command` instance for the `add` command.
+ */
 export function createAddCommand(): Command {
   return new Command('add')
     .description('Add a feature autonomously — plan, implement, test, verify')

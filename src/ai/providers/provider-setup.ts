@@ -31,7 +31,11 @@ const PROVIDER_CHOICES = [
   { title: 'Ollama (local, free)', value: 'ollama' as const },
 ];
 
-/** Interactive provider configuration. Returns true when saved. */
+/**
+ * Run an interactive setup wizard to configure an AI provider.
+ *
+ * @returns `true` when a provider is successfully configured and saved, `false` otherwise.
+ */
 export async function runProviderSetup(ui: SetupWizardUI): Promise<boolean> {
   ui.renderSetupHeader();
   prompts.override({});
@@ -63,7 +67,12 @@ export async function runProviderSetup(ui: SetupWizardUI): Promise<boolean> {
   }
 }
 
-// ── Azure ─────────────────────────────────────────────────────────────────────
+/**
+ * Interactively collect an Azure endpoint and API key, fetch chat-capable deployments, validate a selected deployment, and persist the Azure provider configuration.
+ *
+ * @param ui - UI callbacks for rendering prompts, spinners, and messages during the interactive setup
+ * @returns `true` if the provider was successfully configured and saved, `false` otherwise
+ */
 
 async function setupAzure(ui: SetupWizardUI): Promise<boolean> {
   // eslint-disable-next-line no-constant-condition
@@ -182,7 +191,11 @@ async function setupAzure(ui: SetupWizardUI): Promise<boolean> {
   }
 }
 
-// ── OpenAI ────────────────────────────────────────────────────────────────────
+/**
+ * Run the OpenAI provider setup flow: collect credentials and endpoint, fetch available models, prompt for a model if needed, validate the selection, and persist the resulting configuration.
+ *
+ * @returns `true` if the provider was successfully configured and saved, `false` otherwise.
+ */
 
 async function setupOpenAI(ui: SetupWizardUI): Promise<boolean> {
   const { apiKey } = await prompts({
@@ -253,7 +266,13 @@ async function setupOpenAI(ui: SetupWizardUI): Promise<boolean> {
   });
 }
 
-// ── Anthropic ─────────────────────────────────────────────────────────────────
+/**
+ * Configure the Anthropic provider by collecting credentials and a model, validating the selection, and saving the configuration.
+ *
+ * Prompts the user for an API key and optional endpoint, retrieves available models (or asks for a model name if none are returned), and then validates and persists the resulting configuration.
+ *
+ * @returns `true` if the provider was successfully configured and saved, `false` otherwise.
+ */
 
 async function setupAnthropic(ui: SetupWizardUI): Promise<boolean> {
   const { apiKey } = await prompts({
@@ -321,7 +340,13 @@ async function setupAnthropic(ui: SetupWizardUI): Promise<boolean> {
   });
 }
 
-// ── Ollama ────────────────────────────────────────────────────────────────────
+/**
+ * Guides the user through configuring an Ollama provider.
+ *
+ * Prompts for an Ollama endpoint, fetches local models from that endpoint, asks the user to select a model, and then validates and persists the chosen configuration.
+ *
+ * @returns `true` if the Ollama provider was configured and saved, `false` otherwise.
+ */
 
 async function setupOllama(ui: SetupWizardUI): Promise<boolean> {
   const { endpoint } = await prompts({
@@ -378,6 +403,15 @@ async function setupOllama(ui: SetupWizardUI): Promise<boolean> {
   });
 }
 
+/**
+ * Validate the provided AI configuration by testing the provider connection, then persist it.
+ *
+ * Shows a spinner while testing connectivity, renders errors on failure, and saves the configuration on success.
+ *
+ * @param ui - UI helper used for progress display, spinners, and error/info rendering
+ * @param config - AI configuration to validate and save (provider, endpoint/key, model, etc.)
+ * @returns `true` if the connection test succeeded and the configuration was saved, `false` otherwise.
+ */
 async function saveAndValidate(ui: SetupWizardUI, config: AIConfig): Promise<boolean> {
   console.log();
   const spinner = ui.renderThinking();

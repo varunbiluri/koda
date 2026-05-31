@@ -20,6 +20,13 @@ export interface SlashCommitOptions {
   userMessage?: string;
 }
 
+/**
+ * Execute a git command in the given repository directory and return its trimmed standard output.
+ *
+ * @param rootPath - Path to the Git repository to run the command in
+ * @param args - Arguments to pass to the `git` command (e.g., `diff --staged`)
+ * @returns The command's stdout with leading and trailing whitespace removed
+ */
 function gitExec(rootPath: string, args: string): string {
   return execSync(`git ${args}`, {
     cwd: rootPath,
@@ -28,13 +35,27 @@ function gitExec(rootPath: string, args: string): string {
   }).trim();
 }
 
-/** @internal exported for tests */
+/**
+ * Truncates a diff string to a maximum length and appends a clear truncation marker when truncated.
+ *
+ * @param diff - The diff text to truncate
+ * @param maxChars - Maximum allowed characters for the returned diff (defaults to the module's max)
+ * @returns The original `diff` if its length is within `maxChars`, otherwise the first `maxChars` characters followed by a truncation notice
+ */
 export function truncateDiff(diff: string, maxChars = MAX_DIFF_CHARS): string {
   if (diff.length <= maxChars) return diff;
   return `${diff.slice(0, maxChars)}\n\n... (diff truncated for LLM)`;
 }
 
-/** @internal exported for tests */
+/**
+ * Clean and normalize a raw commit message string.
+ *
+ * Removes surrounding fenced code blocks (triple backticks) and surrounding single or double quotes, and trims leading/trailing whitespace.
+ *
+ * @internal exported for tests
+ * @param raw - The raw commit message text to sanitize (may include code fences or surrounding quotes)
+ * @returns The sanitized commit message
+ */
 export function sanitizeCommitMessage(raw: string): string {
   let msg = raw.trim();
   if (msg.startsWith('```')) {
@@ -50,7 +71,17 @@ export function sanitizeCommitMessage(raw: string): string {
   return msg;
 }
 
-/** @internal exported for tests */
+/**
+ * Produce a git commit message for the given staged diff using the configured AI provider.
+ *
+ * The staged diff is truncated if it exceeds the configured limit; the AI response is sanitized
+ * to remove fences and surrounding quotes before being returned.
+ *
+ * @param stagedDiff - The full staged diff text to base the commit message on
+ * @returns The sanitized commit message (subject line, optionally with a body after a blank line)
+ * @throws Error if the model returns an empty commit message
+ * @internal exported for tests
+ */
 export async function generateCommitMessage(stagedDiff: string): Promise<string> {
   const provider = createProvider(await loadConfig());
   const truncated = truncateDiff(stagedDiff);
@@ -82,7 +113,12 @@ export async function generateCommitMessage(stagedDiff: string): Promise<string>
 }
 
 /**
- * Run the /commit flow: staged diff → proposed message → approval → git commit.
+ * Orchestrates the interactive /commit flow: collects the staged diff, obtains a commit message
+ * (from the user or by generating one from the staged diff), shows staged files and a diff preview,
+ * requests user approval, and performs the git commit.
+ *
+ * @param opts - Options including the repository root path, a UI renderer, and an optional
+ *               user-supplied commit message that bypasses AI generation
  */
 export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
   const { rootPath, ui, userMessage } = opts;

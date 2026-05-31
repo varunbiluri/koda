@@ -9,6 +9,13 @@ import type { KcbScorecard } from './score.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Generate or overwrite leaderboard.md in the module directory using the provided scorecard and up to ten recent entries from leaderboard.json.
+ *
+ * Reads leaderboard.json (if present and parseable) to build a short history, formats a "Latest run" section and a "History" table with KEI, success rate, median tokens, and ref rate, then writes the resulting markdown to leaderboard.md.
+ *
+ * @param latest - The most recent KcbScorecard to use as the "Latest run" entry and to include at the top of the history
+ */
 export async function writeLeaderboardMarkdown(latest: KcbScorecard): Promise<void> {
   const jsonPath = path.join(__dirname, 'leaderboard.json');
   let history: KcbScorecard[] = [latest];

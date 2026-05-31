@@ -26,6 +26,15 @@ export interface KcbScorecard {
   note?:                string;
 }
 
+/**
+ * Aggregate an array of KCB task results into a scorecard of summary metrics.
+ *
+ * @param results - Per-task telemetry used to compute aggregates; expects each entry to include `promptTokens`, `completionTokens`, `success`, and `refRate`.
+ * @param opts - Options for the scorecard generation.
+ * @param opts.version - Version identifier to include in the scorecard metadata.
+ * @param opts.baselineMedianTokens - Baseline median token count used to compute the `kei`.
+ * @returns The computed KcbScorecard containing metadata (`version`, `runAt`), aggregated metrics (`taskCount`, `successRate`, `medianTokens`, `medianPromptTokens`, `medianRefRate`, `kei`), `baselineMedianTokens`, and the original `results` array.
+ */
 export function scoreResults(
   results: KcbTaskResult[],
   opts: { version: string; baselineMedianTokens: number },

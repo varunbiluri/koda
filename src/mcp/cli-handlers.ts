@@ -16,7 +16,13 @@ export interface McpCliCallbacks {
   error: (message: string, hint?: string) => void;
 }
 
-/** Run an MCP subcommand (list|tools|add|remove|reconnect). */
+/**
+ * Dispatches an MCP CLI subcommand to the corresponding handler.
+ *
+ * @param args - CLI arguments where the first element selects the subcommand (defaults to "list" when absent).
+ * @param rootPath - Filesystem root path used to initialize the MCP manager.
+ * @param callbacks - Handlers for informational and error output to the console.
+ */
 export async function runMcpCommand(
   args: string[],
   rootPath: string,
@@ -59,6 +65,15 @@ export async function runMcpCommand(
   }
 }
 
+/**
+ * Display configured MCP servers and their connection status to the console.
+ *
+ * Prints the global MCP config path, shows a message and example usage if no servers are configured,
+ * and otherwise lists each server with its connection state and tool count.
+ *
+ * @param rootPath - Filesystem root used to read MCP configuration and resolve server statuses
+ * @param callbacks - Console callbacks used to emit informational or error messages
+ */
 async function listMcpServers(rootPath: string, callbacks: McpCliCallbacks): Promise<void> {
   const statuses = await mcpManager.getStatuses(rootPath);
   const config = await loadMcpConfig(rootPath);
@@ -85,6 +100,14 @@ async function listMcpServers(rootPath: string, callbacks: McpCliCallbacks): Pro
   console.log();
 }
 
+/**
+ * Display available MCP tools across connected servers.
+ *
+ * Ensures the MCP manager is connected, prints a header with the total tool count, and lists up to the first 50 tools showing each tool's full name and a truncated description. If no tools are available an informational message is sent via the provided callbacks; if more than 50 tools exist a summary line indicates how many are omitted.
+ *
+ * @param rootPath - Filesystem root path used by the MCP manager
+ * @param callbacks - Console callbacks for informational and error messages
+ */
 async function listMcpTools(rootPath: string, callbacks: McpCliCallbacks): Promise<void> {
   await mcpManager.ensureConnected(rootPath);
   const tools = await mcpManager.listAllTools(rootPath);
@@ -108,6 +131,17 @@ async function listMcpTools(rootPath: string, callbacks: McpCliCallbacks): Promi
   console.log();
 }
 
+/**
+ * Add an MCP server to the global configuration and attempt to connect to it.
+ *
+ * If the provided arguments are insufficient, reports usage via `callbacks.error` and returns.
+ * On successful save, reports confirmation via `callbacks.info`. Then attempts to connect:
+ * - On successful connection, reports success via `callbacks.info`.
+ * - On connection failure, reports the saved-but-failed status via `callbacks.error` with the error message.
+ *
+ * @param args - CLI arguments where `args[1]` is the server name, `args[2]` is the command, and `args.slice(3)` are command arguments
+ * @param callbacks - Callbacks used to report informational and error messages
+ */
 async function addMcpServer(
   args: string[],
   _rootPath: string,
@@ -134,6 +168,12 @@ async function addMcpServer(
   console.log();
 }
 
+/**
+ * Removes an MCP server from global configuration and disconnects it if found.
+ *
+ * @param args - Command arguments; expects the server name at `args[1]`
+ * @param callbacks - Console callbacks for informational and error messages
+ */
 async function removeMcpServer(args: string[], callbacks: McpCliCallbacks): Promise<void> {
   if (args.length < 2) {
     callbacks.error('Usage: koda mcp remove <name>');
@@ -151,6 +191,12 @@ async function removeMcpServer(args: string[], callbacks: McpCliCallbacks): Prom
   console.log();
 }
 
+/**
+ * Disconnects all configured MCP servers and re-establishes connections using the given root path.
+ *
+ * @param rootPath - File-system root path used when connecting to MCP servers
+ * @param callbacks - Console callbacks for informational and error messages; used to report reconnection success
+ */
 async function reconnectMcpServers(rootPath: string, callbacks: McpCliCallbacks): Promise<void> {
   await mcpManager.disconnectAll();
   await mcpManager.ensureConnected(rootPath);

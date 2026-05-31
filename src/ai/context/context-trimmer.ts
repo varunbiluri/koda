@@ -22,6 +22,13 @@ export interface TrimResult<T> {
   estimatedTokens: number;
 }
 
+/**
+ * Trim a chat message list to fit within a soft character budget while preserving all system messages and the most recent non-system messages.
+ *
+ * @param messages - Array of chat messages; each item must have a `role` string and may include `content` and `tool_calls`.
+ * @param opts - Optional trimming configuration. `softLimitChars` overrides the character budget; `keepRecentCount` sets how many non-system messages to retain.
+ * @returns An object containing the resulting `messages`, `trimmed` (whether trimming occurred), `droppedCount` (number of non-system messages removed), and `estimatedTokens` (token estimate for the returned messages).
+ */
 export function trimMessages<T extends { role: string; content?: unknown; tool_calls?: unknown }>(
   messages: T[],
   opts:     TrimOptions = {},
@@ -68,7 +75,17 @@ export function trimMessages<T extends { role: string; content?: unknown; tool_c
   };
 }
 
-/** Cap oversized tool messages while preserving ref IDs at the start. */
+/**
+ * Truncates overly long `tool`-role message content while preserving a leading reference tag.
+ *
+ * If a `tool` message's `content` is a string longer than `MAX_TOOL_MESSAGE_CHARS`, a leading
+ * reference of the form `[result_<number>]` (if present) is kept, the remainder is truncated so
+ * the total length does not exceed `MAX_TOOL_MESSAGE_CHARS`, and the suffix `…[truncated]` is appended.
+ * Messages that are not `tool` role or whose `content` is not an oversized string are left unchanged.
+ *
+ * @returns The original `messages` array if no truncation was necessary; otherwise a new array
+ *          with modified `tool` messages whose `content` values were truncated.
+ */
 export function capToolMessages<T extends { role: string; content?: unknown }>(
   messages: T[],
 ): T[] {
@@ -88,6 +105,12 @@ export function capToolMessages<T extends { role: string; content?: unknown }>(
   return changed ? out : messages;
 }
 
+/**
+ * Estimates the total character count contributed by an array of messages.
+ *
+ * @param messages - Messages whose `content` and optional `tool_calls` are counted; `content` may be a string or an array of parts with optional `text` fields.
+ * @returns The summed character count from message `content` and serialized `tool_calls`.
+ */
 export function estimateChars(
   messages: Array<{ content?: unknown; tool_calls?: unknown }>,
 ): number {
@@ -108,10 +131,21 @@ export function estimateChars(
   }, 0);
 }
 
+/**
+ * Estimate token usage for a list of messages using a heuristic of 4 characters per token.
+ *
+ * @returns The estimated token count (the ceiling of total characters divided by 4).
+ */
 export function estimateTokens(messages: Array<{ content?: unknown; tool_calls?: unknown }>): number {
   return Math.ceil(estimateChars(messages) / 4);
 }
 
+/**
+ * Trim a chat message list to fit the configured soft context budget and return the resulting messages.
+ *
+ * @param messages - The chat messages to trim; messages with role `'system'` are preserved when trimming, and `tool` messages may be capped before estimating size.
+ * @returns The resulting array of messages after trimming (the original array if no trimming was performed).
+ */
 export function trimContext<T extends { role: string; content?: unknown; tool_calls?: unknown }>(
   messages: T[],
 ): T[] {
@@ -124,6 +158,12 @@ export function trimContext<T extends { role: string; content?: unknown; tool_ca
   return result.messages as T[];
 }
 
+/**
+ * Estimate the total character count of a list of messages.
+ *
+ * @param messages - Messages to measure; each item may include `content` (string or array of parts) and/or `tool_calls` (which are stringified and counted)
+ * @returns The summed character estimate for all provided messages
+ */
 export function peakContextChars(messages: Array<{ content?: unknown; tool_calls?: unknown }>): number {
   return estimateChars(messages);
 }

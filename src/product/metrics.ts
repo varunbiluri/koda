@@ -315,6 +315,11 @@ export class ProductMetrics {
   }
 }
 
+/**
+ * Create a new MetricsStore initialized with default values for a fresh metrics file.
+ *
+ * @returns A MetricsStore populated with version `METRICS_VERSION`, `firstSeenAt`/`lastSeenAt` set to now, `sessionCount` set to 1, zeroed task/token/time aggregates, an empty `recentTasks` array, and `daysActive` containing today's date (YYYY-MM-DD).
+ */
 function fresh(): MetricsStore {
   const now = Date.now();
   return {
@@ -334,6 +339,12 @@ function fresh(): MetricsStore {
   };
 }
 
+/**
+ * Upgrade a previously persisted metrics store to the current metrics schema by ensuring new v2 fields exist.
+ *
+ * @param old - The existing metrics store (possibly from an older schema version)
+ * @returns A `MetricsStore` set to the current schema version, with `totalPromptTokens` and `totalCompletionTokens` initialized to `0` and `recentTasks` guaranteed to be an array
+ */
 function migrateStore(old: MetricsStore): MetricsStore {
   return {
     ...old,

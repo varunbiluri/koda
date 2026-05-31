@@ -90,6 +90,12 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: '/mobile',   description: 'Mobile integration info', category: 'platform', wip: true },
 ];
 
+/**
+ * Finds the registered slash command definition matching the provided command name or alias, case-insensitively.
+ *
+ * @param cmd - The command string to look up; may be a canonical name or an alias (matching is case-insensitive).
+ * @returns The corresponding `SlashCommandDef` if a match is found, `undefined` otherwise.
+ */
 export function findSlashCommand(cmd: string): SlashCommandDef | undefined {
   const lower = cmd.toLowerCase();
   return SLASH_COMMANDS.find(
@@ -97,6 +103,11 @@ export function findSlashCommand(cmd: string): SlashCommandDef | undefined {
   );
 }
 
+/**
+ * Group registered slash commands by their category.
+ *
+ * @returns A Map keyed by `SlashCommandCategory` where each value is an array of `SlashCommandDef` in that category.
+ */
 export function getCommandsByCategory(): Map<SlashCommandCategory, SlashCommandDef[]> {
   const map = new Map<SlashCommandCategory, SlashCommandDef[]>();
   for (const def of SLASH_COMMANDS) {
@@ -107,14 +118,24 @@ export function getCommandsByCategory(): Map<SlashCommandCategory, SlashCommandD
   return map;
 }
 
-/** Resolve primary command name from input (first token). */
+/**
+ * Parse a raw slash-command string into its command token and arguments.
+ *
+ * @param input - The raw input string provided by the user.
+ * @returns An object with `cmd` set to the first token lowercased (or `''` if no token) and `args` containing the remaining tokens in order.
+ */
 export function parseSlashCommand(input: string): { cmd: string; args: string[] } {
   const parts = input.trim().split(/\s+/);
   const cmd = (parts[0] ?? '').toLowerCase();
   return { cmd, args: parts.slice(1) };
 }
 
-/** Map aliases to canonical command names for routing. */
+/**
+ * Return the canonical slash command name for a given command or alias.
+ *
+ * @param cmd - The command or alias to normalize (lookup is case-insensitive).
+ * @returns The registered canonical command name if a match is found, otherwise the original `cmd`.
+ */
 export function canonicalSlashCommand(cmd: string): string {
   const def = findSlashCommand(cmd);
   return def?.name ?? cmd;

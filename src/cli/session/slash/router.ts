@@ -35,6 +35,13 @@ export interface SlashHandlerContext {
   handleDiff:      (ctx: ConversationContext) => Promise<void>;
 }
 
+/**
+ * Route and execute an in-session slash command.
+ *
+ * @param input - The raw user-entered slash command string (for example `"/help"` or `"/commit message"`).
+ * @param h - Handler context providing UI, engine, conversation context, and auxiliary handlers used to perform command actions.
+ * @returns `'quit'` to terminate the session, `'continue'` to keep the session running.
+ */
 export async function handleSlashCommand(
   input: string,
   h: SlashHandlerContext,
@@ -222,7 +229,15 @@ export async function handleSlashCommand(
   }
 }
 
-// ── MCP subcommands ─────────────────────────────────────────────────────────
+/**
+ * Runs an MCP subcommand and forwards its output to the UI.
+ *
+ * Executes the MCP command represented by `args` for the current session root and
+ * routes informational and error messages to the provided UI renderer.
+ *
+ * @param args - The MCP subcommand name followed by its arguments
+ * @param h - Handler context providing `ctx.rootPath` and UI rendering methods
+ */
 
 async function handleMcp(args: string[], h: SlashHandlerContext): Promise<void> {
   await runMcpCommand(args, h.ctx.rootPath, {
@@ -231,7 +246,20 @@ async function handleMcp(args: string[], h: SlashHandlerContext): Promise<void> 
   });
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+/**
+ * Performs a health check and prints repository, index, agent, MCP, Git, and AI configuration status.
+ *
+ * Prints an "Doctor" header, then:
+ * - reports index file and chunk counts (or suggests `/init` if not found),
+ * - reports the number of registered agents,
+ * - reports MCP connection status (connected/total),
+ * - reports current Git branch (or "Git: unavailable"),
+ * - reports whether AI is configured (or suggests `/login`),
+ * and finally prints a "Health check complete" footer.
+ *
+ * @param rootPath - Path to the repository root to inspect
+ * @param ui - UI renderer used to display the status lines
+ */
 
 async function runDoctor(rootPath: string, ui: UIRenderer): Promise<void> {
   console.log();
@@ -267,6 +295,12 @@ async function runDoctor(rootPath: string, ui: UIRenderer): Promise<void> {
   console.log();
 }
 
+/**
+ * Prints repository status information (path, branch, and index summary) to the UI.
+ *
+ * @param ctx - Conversation context containing `rootPath`, optional `branch`, and optional `index` used to report indexed file count
+ * @param ui - UI renderer used to display the status lines
+ */
 async function showStatus(ctx: ConversationContext, ui: UIRenderer): Promise<void> {
   console.log();
   console.log(chalk.bold('  Status'));
@@ -281,6 +315,12 @@ async function showStatus(ctx: ConversationContext, ui: UIRenderer): Promise<voi
   console.log();
 }
 
+/**
+ * Displays the permission-tier legend with example capabilities for each tier.
+ *
+ * Prints three labeled tiers — `AUTO`, `ASK`, and `BLOCK` — with representative actions
+ * or permissions for each tier to guide user expectations about automated vs. restricted operations.
+ */
 function showPermissions(ui: UIRenderer): void {
   console.log();
   console.log(chalk.bold('  Permission tiers'));
@@ -291,6 +331,11 @@ function showPermissions(ui: UIRenderer): void {
   console.log();
 }
 
+/**
+ * Displays the current AI provider configuration (provider, model, and endpoint) or prompts the user to run `/login` if no configuration is present.
+ *
+ * If no configuration exists, informs the user via the UI and returns early.
+ */
 async function showConfig(ui: UIRenderer): Promise<void> {
   if (!(await configExists())) {
     ui.renderInfo('No configuration — run /login');
@@ -307,6 +352,9 @@ async function showConfig(ui: UIRenderer): Promise<void> {
   console.log();
 }
 
+/**
+ * Displays the configured AI model and provider, or prompts the user to run `/login` if no configuration exists.
+ */
 async function showModel(ui: UIRenderer): Promise<void> {
   if (!(await configExists())) {
     ui.renderInfo('No model configured — /login');
@@ -318,6 +366,13 @@ async function showModel(ui: UIRenderer): Promise<void> {
   console.log();
 }
 
+/**
+ * Removes stored CLI credentials by deleting the local Koda config file and notifies the user.
+ *
+ * If the credentials file exists it is deleted and a success message is shown; otherwise an informational message indicates no credentials were found.
+ *
+ * @param ui - UI renderer used to display messages to the user
+ */
 async function handleLogout(ui: UIRenderer): Promise<void> {
   try {
     const configPath = path.join(
@@ -333,6 +388,16 @@ async function handleLogout(ui: UIRenderer): Promise<void> {
   console.log();
 }
 
+/**
+ * Display comments for the current pull request using the GitHub CLI.
+ *
+ * If comments are available, prints them to stdout. If the command fails
+ * (for example because the `gh` CLI is unavailable or there is no open PR),
+ * shows an informational message via the UI.
+ *
+ * @param rootPath - Repository root path to run the command in
+ * @param ui - UI renderer used to show informational messages
+ */
 async function showPrComments(rootPath: string, ui: UIRenderer): Promise<void> {
   try {
     const out = execSync('gh pr view --comments', {
@@ -348,6 +413,16 @@ async function showPrComments(rootPath: string, ui: UIRenderer): Promise<void> {
   }
 }
 
+/**
+ * Displays workspace memory for the repository at the given root path.
+ *
+ * Loads the workspace intelligence store and prints a formatted memory summary to stdout.
+ * If no learned patterns are available, renders an informational message via `ui`.
+ * If the memory store cannot be loaded, renders a fallback informational message via `ui`.
+ *
+ * @param rootPath - Filesystem path of the repository to inspect
+ * @param ui - UI renderer used to show informational messages
+ */
 async function showMemory(rootPath: string, ui: UIRenderer): Promise<void> {
   try {
     const ws = await WorkspaceIntelligence.load(rootPath);
@@ -366,6 +441,14 @@ async function showMemory(rootPath: string, ui: UIRenderer): Promise<void> {
   }
 }
 
+/**
+ * Write a compact markdown session summary to the repository's .koda/session-export.md file.
+ *
+ * The file includes an export timestamp, the repository path, and indexed file count when available.
+ * The output directory is created if missing and the file is overwritten if it already exists.
+ *
+ * @param rootPath - Filesystem path to the repository where the session summary will be written
+ */
 async function exportSessionSummary(rootPath: string, ui: UIRenderer): Promise<void> {
   const outPath = path.join(rootPath, '.koda', 'session-export.md');
   const meta = await loadIndexMetadata(rootPath).catch(() => null);
@@ -388,6 +471,11 @@ async function exportSessionSummary(rootPath: string, ui: UIRenderer): Promise<v
   console.log();
 }
 
+/**
+ * Prints a brief list of registered skills with their IDs and truncated descriptions.
+ *
+ * Displays a header with the total skill count, outputs up to the first 20 skills (ID and up to 50 characters of description), and shows a hint indicating how many additional skills exist and how to list them all.
+ */
 function showSkills(ui: UIRenderer): void {
   const skills = skillRegistry.getAll();
   console.log();
@@ -402,6 +490,12 @@ function showSkills(ui: UIRenderer): void {
   console.log();
 }
 
+/**
+ * Prints a concise list of registered agents to the terminal.
+ *
+ * Shows a header with the total agent count and prints up to the first 25 agents,
+ * each on its own line with the agent name and a description truncated to 45 characters.
+ */
 function showAgents(ui: UIRenderer): void {
   const agents = agentRegistry.getAllAgents();
   console.log();

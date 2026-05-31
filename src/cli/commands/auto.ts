@@ -62,7 +62,16 @@ function minConfidenceOrder(level: ConfidenceLevel): number {
   return level === 'HIGH' ? 2 : level === 'MEDIUM' ? 1 : 0;
 }
 
-// ── Command ────────────────────────────────────────────────────────────────────
+/**
+ * Create the `auto` CLI subcommand that runs an autonomous execute → verify → fix loop for a given task.
+ *
+ * The command executes a task via the ReasoningEngine, optionally verifies results (build/test),
+ * and iteratively generates fixes and retries until the task succeeds or smart stop conditions trigger.
+ * It enforces safety gates (confidence thresholds, no-progress detection, and high-impact write prompts),
+ * supports dry-run, explain output, metrics/telemetry, learner memory, and configurable iteration limits.
+ *
+ * @returns The configured Commander `Command` instance for the `auto` subcommand.
+ */
 
 export function createAutoCommand(): Command {
   return new Command('auto')

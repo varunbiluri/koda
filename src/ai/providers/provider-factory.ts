@@ -5,7 +5,13 @@ import { OpenAIProvider } from './openai-provider.js';
 import { AnthropicProvider } from './anthropic-provider.js';
 import { OllamaProvider } from './ollama-provider.js';
 
-/** Create the AI provider for the given config. */
+/**
+ * Create an AI provider implementation based on the provided configuration.
+ *
+ * @param config - Configuration object whose `provider` field selects which AI provider to instantiate.
+ * @returns An `AIProvider` instance corresponding to `config.provider`.
+ * @throws Error if `config.provider` is not a recognized provider (message: `Unknown provider: <provider>`).
+ */
 export function createProvider(config: AIConfig): AIProvider {
   switch (config.provider) {
     case 'azure':
@@ -21,7 +27,11 @@ export function createProvider(config: AIConfig): AIProvider {
   }
 }
 
-/** Load config from disk and return the matching provider. */
+/**
+ * Load persisted AI configuration and instantiate the corresponding AIProvider.
+ *
+ * @returns The constructed AIProvider based on the loaded configuration
+ */
 export async function loadProvider(): Promise<AIProvider> {
   const config = await loadConfig();
   return createProvider(config);

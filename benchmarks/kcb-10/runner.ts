@@ -27,12 +27,22 @@ export interface KcbFixture {
   successHints?: string[];
 }
 
+/**
+ * Load fixture definitions from the module-local `fixtures.json`.
+ *
+ * @returns The array of parsed `KcbFixture` objects.
+ */
 export async function loadFixtures(): Promise<KcbFixture[]> {
   const raw = await fs.readFile(path.join(__dirname, 'fixtures.json'), 'utf8');
   return JSON.parse(raw) as KcbFixture[];
 }
 
-/** Mock run for CI / offline — produces deterministic placeholder metrics. */
+/**
+ * Run a deterministic offline benchmark that scores fixtures using synthetic, repeatable task metrics.
+ *
+ * @param version - Version identifier applied to the produced scorecard
+ * @returns A KcbScorecard representing the scored mock results derived from synthetic per-task metrics
+ */
 export async function runMockBenchmark(version: string): Promise<KcbScorecard> {
   const fixtures = await loadFixtures();
   const results: KcbTaskResult[] = fixtures.map((f, i) => ({
@@ -53,7 +63,17 @@ export async function runMockBenchmark(version: string): Promise<KcbScorecard> {
   });
 }
 
-/** Live KCB-10 — runs fixtures against the configured AI provider. */
+/**
+ * Run the KCB-10 benchmark against the configured AI provider and return the scored results.
+ *
+ * Executes each benchmark fixture using the project's AI provider, aggregates per-task metrics,
+ * scores the results into a KCB scorecard, and updates the product KEI baseline.
+ *
+ * @param rootPath - Path to the repository root used for indexing and as chat context
+ * @param version - Version identifier to include in the produced scorecard
+ * @returns The computed KcbScorecard for this benchmark run
+ * @throws Error if no AI configuration is present (instructs to run `koda login`)
+ */
 export async function runLiveBenchmark(rootPath: string, version: string): Promise<KcbScorecard> {
   const { loadConfig, configExists } = await import('../../src/ai/config-store.js');
   const { createProvider } = await import('../../src/ai/providers/provider-factory.js');
@@ -119,6 +139,14 @@ export async function runLiveBenchmark(rootPath: string, version: string): Promi
   return card;
 }
 
+/**
+ * Run the KCB-10 benchmark (mock or live), print the resulting scorecard, and update leaderboards.
+ *
+ * The mode is chosen from CLI flags (`--live` to run live; `--mock` or absence of `--live` for mock).
+ * Environment variables `KODA_BENCH_ROOT` and `KODA_VERSION` influence the benchmark root path and version.
+ * In mock mode the scorecard note is set to indicate synthetic metrics. The final scorecard is emitted
+ * as JSON to stdout and persisted to the rolling JSON leaderboard and the published Markdown leaderboard.
+ */
 async function main(): Promise<void> {
   const args     = process.argv.slice(2);
   const mock     = args.includes('--mock') || !args.includes('--live');
@@ -137,11 +165,23 @@ async function main(): Promise<void> {
   await publishLeaderboardMd(card);
 }
 
+/**
+ * Publishes the provided scorecard as a Markdown leaderboard.
+ *
+ * @param latest - The latest KCB scorecard to publish as Markdown
+ */
 async function publishLeaderboardMd(latest: KcbScorecard): Promise<void> {
   const { writeLeaderboardMarkdown } = await import('./publish-leaderboard.js');
   await writeLeaderboardMarkdown(latest);
 }
 
+/**
+ * Prepends a scorecard to the local rolling leaderboard file.
+ *
+ * Writes or creates leaderboard.json next to this module, keeping at most the 20 most recent scorecards.
+ *
+ * @param card - The latest KcbScorecard to add to the leaderboard
+ */
 async function writeLeaderboard(card: KcbScorecard): Promise<void> {
   const outPath = path.join(__dirname, 'leaderboard.json');
   let existing: KcbScorecard[] = [];

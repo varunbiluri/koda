@@ -1,7 +1,15 @@
 import { logger } from '../../utils/logger.js';
 import type { ChatCompletionStreamChunk } from '../types.js';
 
-/** Parse OpenAI-compatible SSE stream and invoke onChunk for each text delta. */
+/**
+ * Consume an OpenAI-compatible Server-Sent Events (SSE) stream and invoke a callback for each text delta.
+ *
+ * Processes newline-delimited `data: ...` events from the provided `body`, ignores empty lines and `data: [DONE]`,
+ * parses each `data: ` payload as JSON, and calls `onChunk` with the `choices[0].delta.content` string when present.
+ *
+ * @param body - ReadableStream of UTF-8 encoded SSE bytes
+ * @param onChunk - Callback invoked for each extracted text fragment (the `delta.content` value)
+ */
 export async function consumeOpenAiSseStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (chunk: string) => void,

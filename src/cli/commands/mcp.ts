@@ -2,6 +2,16 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { runMcpCommand } from '../../mcp/cli-handlers.js';
 
+/**
+ * Create the top-level `mcp` CLI command for managing MCP servers.
+ *
+ * The returned command is configured with colored informational and error callbacks
+ * and includes these subcommands: `list` (alias `status`), `tools`, `add <name> <command...>`,
+ * `remove <name>` (alias `rm`), and `reconnect`. Invoking `mcp` without a subcommand
+ * defaults to listing servers.
+ *
+ * @returns A Commander `Command` instance configured for the `mcp` command and its subcommands
+ */
 export function createMcpCommand(): Command {
   const mcpCmd = new Command('mcp')
     .description('Manage MCP servers (Claude Code–style)');
