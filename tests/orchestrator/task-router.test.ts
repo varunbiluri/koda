@@ -10,7 +10,7 @@
  *   - The three representative scenarios from the spec
  */
 import { describe, it, expect } from 'vitest';
-import { TaskRouter, TaskComplexity, type TaskClassification } from '../../src/orchestrator/task-router.js';
+import { TaskRouter, TaskComplexity, isContextQuestion, isIdentityQuestion, type TaskClassification } from '../../src/orchestrator/task-router.js';
 
 const router = new TaskRouter();
 
@@ -43,6 +43,60 @@ describe('TaskRouter — spec scenarios', () => {
     expect(result.complexity).toBe(TaskComplexity.COMPLEX);
     expect(result.confidence).toBeGreaterThanOrEqual(0.6);
   });
+});
+
+// ── Meta / session awareness (fast path — not MEDIUM pipeline) ───────────────
+
+describe('TaskRouter — identity vs context', () => {
+  it('who are you is identity', () => {
+    expect(isIdentityQuestion('who are you?')).toBe(true);
+    expect(isContextQuestion('who are you?')).toBe(false);
+  });
+
+  it('what context is context not identity', () => {
+    expect(isContextQuestion('what context you have?')).toBe(true);
+    expect(isIdentityQuestion('what context you have?')).toBe(false);
+  });
+});
+
+describe('TaskRouter — session awareness', () => {
+  const META_QUERIES = [
+    'what context you have till now about the repo?',
+    'what do you know about this repo',
+    'what can you do',
+    'in which locaion we are in?',
+    'where are we',
+  ];
+
+  for (const query of META_QUERIES) {
+    it(`classifies as SIMPLE: "${query}"`, () => {
+      const files = Array.from({ length: 6 }, (_, i) => `src/f${i}.ts`);
+      const result = classify(query, files);
+      expect(result.complexity).toBe(TaskComplexity.SIMPLE);
+      expect(result.confidence).toBeGreaterThanOrEqual(0.6);
+    });
+  }
+});
+
+// ── Git workflow (fast path — not MEDIUM pipeline) ───────────────────────────
+
+describe('TaskRouter — git / PR workflow', () => {
+  const PR_QUERIES = [
+    'can we create PR now with new branch name',
+    'create a pull request',
+    'open a PR please',
+    'gh pr create',
+    'push the branch and create PR',
+    'first create new branch and the need to crate pr bro',
+  ];
+
+  for (const query of PR_QUERIES) {
+    it(`classifies as SIMPLE: "${query}"`, () => {
+      const result = classify(query, ['src/foo.ts', 'src/bar.ts', 'src/baz.ts']);
+      expect(result.complexity).toBe(TaskComplexity.SIMPLE);
+      expect(result.confidence).toBeGreaterThanOrEqual(0.6);
+    });
+  }
 });
 
 // ── SIMPLE keyword detection ──────────────────────────────────────────────────
@@ -139,6 +193,12 @@ describe('TaskRouter — no keyword fallback', () => {
     expect(r.complexity).toBe(TaskComplexity.SIMPLE);
     // Confidence is WEAK (0.55) — below the safety floor
     expect(r.confidence).toBeLessThan(TaskRouter.SAFETY_FLOOR);
+  });
+
+  it('question with 3 files and no action verbs → SIMPLE', () => {
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+    const r = classify('what context you have till now about the repo?', files);
+    expect(r.complexity).toBe(TaskComplexity.SIMPLE);
   });
 
   it('ambiguous query, 3 files → MEDIUM', () => {

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Koda</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <div class="titlebar">
+      <div class="titlebar-left">
+        <div class="logo">KODA</div>
+        <div id="titleMeta" class="meta">No project open</div>
+      </div>
+      <div class="titlebar-actions">
+        <button id="settingsBtn" class="btn icon hidden" title="AI Settings">Settings</button>
+        <button id="terminalToggle" class="btn icon hidden" title="Terminal (⌘J)">Terminal</button>
+        <button id="openFolderBtn" class="btn primary">Open project</button>
+      </div>
+    </div>
+
+    <div id="welcomeScreen" class="welcome-screen">
+      <h2>Local-first AI engineering workspace</h2>
+      <p>Codex-style agent workflows against your local repository, tools, and models. Review plans, inspect diffs, supervise tool execution, and track context efficiency.</p>
+      <button id="welcomeOpenBtn" class="btn primary" style="padding:10px 20px;font-size:14px;">Open project folder</button>
+      <p id="welcomeError" class="error-banner hidden" style="max-width:420px;"></p>
+      <p id="loading" class="meta hidden">Starting Koda engine…</p>
+    </div>
+
+    <div id="workspace" class="workspace hidden">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <button id="newThreadBtn" class="btn primary" style="width:100%;">+ New thread</button>
+        </div>
+        <div class="sidebar-section">
+          <h3>Project</h3>
+          <div id="projectInfo" class="meta" style="line-height:1.5;"></div>
+        </div>
+        <div class="sidebar-section" style="border:none;padding-bottom:4px;">
+          <h3>Threads</h3>
+        </div>
+        <div id="threadList" class="thread-list"></div>
+      </aside>
+
+      <section class="center">
+        <div class="thread-header">
+          <span id="threadTitle">Thread</span>
+          <span class="mode-badge">Local</span>
+        </div>
+        <div id="messages" class="messages"></div>
+        <div class="composer-wrap">
+          <div class="composer">
+            <textarea id="input" rows="1" placeholder="Ask Koda to fix, refactor, test, or explain…"></textarea>
+            <button id="sendBtn" class="composer-send" type="button">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="right-panel">
+        <div class="panel-tabs">
+          <button class="panel-tab active" data-tab="plan">Plan</button>
+          <button class="panel-tab" data-tab="diff">Diff</button>
+          <button class="panel-tab" data-tab="context">Context</button>
+          <button class="panel-tab" data-tab="metrics">Metrics</button>
+          <button class="panel-tab" data-tab="approvals">Approvals</button>
+        </div>
+        <div id="panelPlan" class="panel-content active">
+          <div class="panel-empty">Agent plan will appear here as steps are generated.</div>
+        </div>
+        <div id="panelDiff" class="panel-content">
+          <div class="panel-empty">File changes will appear here.</div>
+        </div>
+        <div id="panelContext" class="panel-content">
+          <div class="panel-empty">Repository intelligence shown here.</div>
+        </div>
+        <div id="panelMetrics" class="panel-content">
+          <div class="panel-empty">Session metrics (KEI, ref rate) after each turn.</div>
+        </div>
+        <div id="panelApprovals" class="panel-content">
+          <div class="panel-empty">Approve writes before they apply.</div>
+        </div>
+      </aside>
+    </div>
+
+    <div id="terminalPanel" class="terminal-panel">
+      <div class="terminal-header">
+        <span>Terminal · raw agent output</span>
+        <button id="terminalClose" class="btn icon">Close</button>
+      </div>
+      <div id="terminalLog" class="terminal-log"></div>
+    </div>
+  </div>
+
+  <div id="setupOverlay" class="setup-overlay hidden">
+    <div class="setup-modal">
+      <div class="setup-header">
+        <h2>Configure AI</h2>
+        <p>Connect your model provider — stored locally in <code>~/.koda/config.json</code></p>
+        <button id="setupClose" class="btn icon setup-close hidden" type="button">✕</button>
+      </div>
+
+      <div id="setupStepProviders" class="setup-step">
+        <div class="provider-grid">
+          <button class="provider-card" data-provider="azure"><strong>Azure OpenAI</strong><span>Enterprise GPT deployments</span></button>
+          <button class="provider-card" data-provider="openai"><strong>OpenAI</strong><span>GPT-4o and friends</span></button>
+          <button class="provider-card" data-provider="anthropic"><strong>Anthropic</strong><span>Claude models</span></button>
+          <button class="provider-card" data-provider="ollama"><strong>Ollama</strong><span>Local models, free</span></button>
+        </div>
+      </div>
+
+      <div id="setupStepForm" class="setup-step hidden">
+        <button id="setupBack" class="btn secondary" type="button" style="margin-bottom:12px;">← Back</button>
+        <div id="setupFields"></div>
+        <div id="setupModelRow" class="hidden" style="margin-top:12px;">
+          <label class="field-label">Model</label>
+          <select id="setupModelSelect" class="setup-input"></select>
+        </div>
+        <p id="setupError" class="error-banner hidden" style="margin-top:12px;"></p>
+        <div class="setup-actions">
+          <button id="setupLoadModels" class="btn" type="button">Load models</button>
+          <button id="setupSave" class="btn primary" type="button" disabled>Save &amp; test</button>
+        </div>
+      </div>
+
+      <div id="setupStepDone" class="setup-step hidden" style="text-align:center;padding:24px 0;">
+        <div style="font-size:40px;margin-bottom:12px;">✓</div>
+        <h3 style="margin:0 0 8px;">Connected</h3>
+        <p id="setupDoneMsg" class="meta"></p>
+        <button id="setupDoneBtn" class="btn primary" style="margin-top:16px;" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="setup.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

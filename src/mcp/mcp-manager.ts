@@ -82,9 +82,10 @@ export class McpManager {
     logger.debug(`[mcp] Connected server "${name}"`);
   }
 
-  async ensureConnected(rootPath?: string): Promise<void> {
+  async ensureConnected(rootPath?: string): Promise<string[]> {
     if (rootPath) this.rootPath = rootPath;
     const config = await loadMcpConfig(this.rootPath);
+    const failures: string[] = [];
 
     for (const [name, serverConfig] of Object.entries(config.servers)) {
       if (serverConfig.enabled === false) continue;
@@ -92,9 +93,13 @@ export class McpManager {
       try {
         await this.connectServer(name, serverConfig);
       } catch (err) {
-        logger.warn(`[mcp] Failed to connect "${name}": ${(err as Error).message}`);
+        const msg = formatConnectError(name, serverConfig, err as Error);
+        failures.push(msg);
+        logger.debug(`[mcp] Failed to connect "${name}": ${msg}`);
       }
     }
+
+    return failures;
   }
 
   async getStatuses(rootPath?: string): Promise<McpServerStatus[]> {
@@ -200,6 +205,15 @@ export class McpManager {
   isMcpTool(toolName: string): boolean {
     return toolName.startsWith(MCP_TOOL_PREFIX);
   }
+}
+
+function formatConnectError(name: string, config: McpServerConfig, err: Error): string {
+  if (/ENOENT|spawn .* ENOENT/i.test(err.message)) {
+    const args = (config.args ?? []).join(' ');
+    const cmd = args ? `${config.command} ${args}` : config.command;
+    return `"${name}": command not found (${cmd})`;
+  }
+  return `"${name}": ${err.message}`;
 }
 
 /** Process-wide MCP manager (session-scoped connections). */

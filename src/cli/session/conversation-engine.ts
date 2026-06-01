@@ -8,7 +8,7 @@ import { createProvider } from '../../ai/providers/provider-factory.js';
 import type { AIProvider } from '../../ai/types.js';
 import { ReasoningEngine } from '../../ai/reasoning/reasoning-engine.js';
 import { QueryEngine } from '../../search/query-engine.js';
-import { TaskRouter, TaskComplexity } from '../../orchestrator/task-router.js';
+import { TaskRouter, TaskComplexity, isContextQuestion, isIdentityQuestion } from '../../orchestrator/task-router.js';
 import { logger } from '../../utils/logger.js';
 import type { RepoIndex } from '../../types/index.js';
 // loadSession/saveSession removed — ReasoningEngine is stateless; no cross-call history is persisted
@@ -27,6 +27,10 @@ import { ConfidenceEngine } from '../../intelligence/confidence-engine.js';
 import { persistTurnMetrics } from './session-metrics.js';
 import { emptyChatMetrics, mergeChatMetrics } from '../../product/task-telemetry.js';
 import type { ChatMetrics } from '../../ai/reasoning/reasoning-engine.js';
+import { agentBudgetManager } from '../../budget/agent-budget-manager.js';
+import { isPrRequest, isBranchOnlyRequest, runSlashPr, runSlashBranch } from './slash/pr-handler.js';
+import { isWorktreeCleanupRequest, runWorktreeCleanup } from './slash/worktree-handler.js';
+import { WorktreeSession } from '../../runtime/worktree-session.js';
 
 export interface ConversationContext {
   rootPath: string;
@@ -39,6 +43,8 @@ export interface ConversationResponse {
   handled: boolean;
   shouldQuit: boolean;
   output?: string;
+  /** When true, skip busy spinner / Ctrl+C hint (immediate deterministic reply). */
+  instant?: boolean;
 }
 
 /**
@@ -99,6 +105,21 @@ export class ConversationEngine {
     return 0;
   }
 
+  /** True when process() returns immediately without LLM / pipeline work. */
+  isInstantTurn(input: string, ctx: ConversationContext): boolean {
+    const normalized = input.trim().toLowerCase();
+    if (['quit', 'exit', 'bye', 'q', ':q', 'goodbye'].includes(normalized)) return true;
+    if (normalized === 'help' || normalized === '?' || normalized === 'status') return true;
+    if (detectIntent(input).intent === 'greeting') return true;
+    if (/\breview\b.*\b(pr|pull request)\b/i.test(normalized) ||
+        /\b(pr|pull request)\b.*\breview\b/i.test(normalized)) return true;
+    if (isIdentityQuestion(input)) return true;
+    if (isContextQuestion(input)) return true;
+    if (isPrRequest(input)) return false;
+    if (isWorktreeCleanupRequest(input)) return false;
+    return false;
+  }
+
   async process(
     input: string,
     ctx: ConversationContext,
@@ -115,18 +136,45 @@ export class ConversationEngine {
     // ── 2. Help ──────────────────────────────────────────────────────────────
     if (normalized === 'help' || normalized === '?') {
       this.ui.renderHelp();
-      return { handled: true, shouldQuit: false };
+      return { handled: true, shouldQuit: false, instant: true };
     }
 
     // ── 3. Status (index metadata — no AI needed) ────────────────────────────
     if (normalized === 'status') {
-      return this.handleStatus(ctx);
+      const r = await this.handleStatus(ctx);
+      return { ...r, instant: true };
     }
 
     // ── 4. Greeting (deterministic — avoid wasting an AI call) ───────────────
     const detected = detectIntent(input);
     if (detected.intent === 'greeting') {
       return this.handleGreeting();
+    }
+
+    // ── 4.5 PR review capability question (deterministic, no tool churn) ─────
+    if (/\breview\b.*\b(pr|pull request)\b/i.test(normalized) ||
+        /\b(pr|pull request)\b.*\breview\b/i.test(normalized)) {
+      this.ui.renderStreamChunk(
+        'Yes — I can review PRs for bugs, regressions, security risks, and missing tests.\n' +
+        'Share a PR URL or run /review for local changes.',
+      );
+      this.ui.renderStreamEnd();
+      return { handled: true, shouldQuit: false, instant: true };
+    }
+
+    // ── 4.6 Identity (who are you / what can you do) ─────────────────────────
+    if (isIdentityQuestion(input)) {
+      return this.handleIdentity();
+    }
+
+    // ── 4.7 Session / repo context (deterministic — no pipeline) ────────────
+    if (isContextQuestion(input)) {
+      return this.handleSessionAwareness(ctx);
+    }
+
+    // ── 4.8 Worktree cleanup (git ops, not AI pipeline) ─────────────────────
+    if (isWorktreeCleanupRequest(input)) {
+      return this.handleWorktreeCleanup(input, ctx);
     }
 
     // ── 5. AI-first path ─────────────────────────────────────────────────────
@@ -154,9 +202,36 @@ export class ConversationEngine {
     signal?: AbortSignal,
     onDiff?: (filePath: string, oldContent: string, newContent: string) => Promise<boolean>,
   ): Promise<ConversationResponse> {
-    this.ui.renderThinking();
+    if (isIdentityQuestion(input)) {
+      return this.handleIdentity();
+    }
+    if (isContextQuestion(input)) {
+      return this.handleSessionAwareness(ctx);
+    }
+    if (isWorktreeCleanupRequest(input)) {
+      return this.handleWorktreeCleanup(input, ctx);
+    }
+
+    // ── Git fast paths (before spinner — avoids double ora instances) ─────────
+    if (isBranchOnlyRequest(input)) {
+      await runSlashBranch({ rootPath: ctx.rootPath, ui: this.ui, userHint: input });
+      return { handled: true, shouldQuit: false };
+    }
+    if (isPrRequest(input)) {
+      const url = await runSlashPr({ rootPath: ctx.rootPath, ui: this.ui, userHint: input });
+      const msg = url
+        ? `Pull request opened: ${url}`
+        : 'PR flow ended — see messages above.';
+      this.ui.renderStreamChunk(msg);
+      this.ui.renderStreamEnd();
+      return { handled: true, shouldQuit: false };
+    }
+
+    this.ui.renderThinking('Working');
     this.lastTimeline = [];
     this.ui.resetSessionState();
+    // Per-turn token tally — avoids session-wide budget warnings on long pipelines.
+    agentBudgetManager.resetAgentBudget('reasoning-engine');
 
     let assistantResponse = '';
 
@@ -187,16 +262,16 @@ export class ConversationEngine {
 
       if (route === TaskComplexity.COMPLEX && ctx.index) {
         // ── COMPLEX path — DAG-based parallel execution via GraphScheduler ─
-        logger.info(`[router] Routing to graph scheduler — ${reason}`);
+        logger.debug(`[router] Routing to graph scheduler — ${reason}`);
         assistantResponse = await this._runWithGraphScheduler(input, ctx, provider, signal, onDiff);
         // Rendering already done inside _runWithGraphScheduler
       } else if (route === TaskComplexity.MEDIUM) {
         // ── MEDIUM path — planning + structured execution + verification ───
-        logger.info(`[router] Routing to feature execution pipeline — ${reason}`);
+        logger.debug(`[router] Routing to feature execution pipeline — ${reason}`);
         assistantResponse = await this._runWithPipeline(input, ctx, provider, signal, onDiff);
       } else {
         // ── SIMPLE path — ReasoningEngine.chat() ─────────────────────────
-        logger.info(`[router] Routing to reasoning engine — ${reason}`);
+        logger.debug(`[router] Routing to reasoning engine — ${reason}`);
 
         const engine   = new ReasoningEngine(ctx.index, provider);
         const timeline: Array<{ name: string; durationMs: number }> = [];
@@ -245,7 +320,15 @@ export class ConversationEngine {
         }
       }
 
+      // Ensure users always see a textual answer, even if tool-only path produced none.
+      if (!assistantResponse.trim()) {
+        const fallback = 'Done. I did not produce a textual response — try rephrasing or ask for a specific action.';
+        this.ui.renderStreamChunk(fallback);
+        this.ui.renderStreamEnd();
+      }
+
     } catch (err) {
+      if (signal?.aborted || (err as Error).name === 'AbortError') throw err;
       this.ui.stopSpinner(false, (err as Error).message);
     }
 
@@ -551,9 +634,10 @@ export class ConversationEngine {
       return assistantResponse;
 
     } catch (err) {
+      if (signal?.aborted) throw err;
       // ── Fallback: GraphScheduler failed → ReasoningEngine.chat() ─────────
       const errMsg = (err as Error).message;
-      logger.warn(`[graph-scheduler] Failed (${errMsg}); falling back to reasoning engine`);
+      logger.debug(`[graph-scheduler] Failed (${errMsg}); falling back to reasoning engine`);
       this.ui.stream(`WARN Graph execution error — falling back to reasoning engine`);
 
       const engine  = new ReasoningEngine(ctx.index, provider);
@@ -636,9 +720,10 @@ export class ConversationEngine {
 
       return assistantResponse;
     } catch (err) {
+      if (signal?.aborted) throw err;
       // ── Graceful fallback: orchestrator failed → ReasoningEngine.chat() ──
       const errMsg = (err as Error).message;
-      logger.warn(`[router] Orchestrator failed (${errMsg}); falling back to reasoning engine`);
+      logger.debug(`[router] Orchestrator failed (${errMsg}); falling back to reasoning engine`);
       this.ui.stream(`WARN Orchestrator error — falling back to reasoning engine`);
 
       const engine   = new ReasoningEngine(ctx.index, provider);
@@ -723,7 +808,8 @@ export class ConversationEngine {
       // ── Phase 2: Structured step-by-step execution ──────────────────────
       const executor = new PlanExecutor(provider, ctx.index, chatContext);
 
-      const { response, metrics: execMetrics } = await executor.execute(
+      const { response, metrics: execMetrics, worktreePath, taskName, autoWorktree } =
+        await executor.execute(
         plan,
         [], // stateless
         (step, idx) => {
@@ -755,15 +841,28 @@ export class ConversationEngine {
         assistantResponse = response;
       }
 
+      const execRoot = worktreePath ?? ctx.rootPath;
+      const execChatContext = { ...chatContext, rootPath: execRoot };
+
       // ── Phase 3: Verification loop (with step context for targeted fixes) ──
-      const verifier = new VerificationLoop(provider, ctx.index, chatContext);
+      const verifier = new VerificationLoop(provider, ctx.index, execChatContext);
       const verResult = await verifier.runWithRetry(
-        ctx.rootPath,
+        execRoot,
         [], // stateless
         (stage) => this.ui.stream(stage),
         signal,
         executor.getStepContexts(),
       );
+
+      if (autoWorktree && taskName) {
+        if (verResult.passed) {
+          await executor.mergeWorktree(taskName);
+          this.ui.stream('WORKTREE merged into main');
+        } else {
+          await executor.removeWorktree(taskName);
+          this.ui.stream('WORKTREE discarded (verification failed)');
+        }
+      }
 
       // ── Phase 4: Execution summary ───────────────────────────────────────
       this.ui.renderFeatureExecutionSummary({
@@ -774,9 +873,10 @@ export class ConversationEngine {
       return assistantResponse;
 
     } catch (err) {
+      if (signal?.aborted) throw err;
       // ── Graceful fallback: pipeline failed → ReasoningEngine.chat() ──────
       const errMsg = (err as Error).message;
-      logger.warn(`[pipeline] Failed (${errMsg}); falling back to reasoning engine`);
+      logger.debug(`[pipeline] Failed (${errMsg}); falling back to reasoning engine`);
       this.ui.stream(`WARN Pipeline error — falling back to reasoning engine`);
 
       const engine   = new ReasoningEngine(ctx.index, provider);
@@ -833,7 +933,83 @@ export class ConversationEngine {
     console.log();
     console.log(`  ${chalk.gray('What would you like to build?')}`);
     console.log();
+    return { handled: true, shouldQuit: false, instant: true };
+  }
+
+  private handleIdentity(): ConversationResponse {
+    this.ui.renderStreamChunk(
+      "I'm **Koda** — a terminal coding agent for this repository.\n\n" +
+      'I can explain code, fix bugs, review changes, and handle git workflows (`/commit`, `/pr`, `/worktree`). ' +
+      'File writes and shell commands need your approval unless `/trust` is on.\n\n' +
+      'Run `/help` for commands · `/status` for index info · `/context` for last retrieved files.',
+    );
+    this.ui.renderStreamEnd();
+    return { handled: true, shouldQuit: false, instant: true };
+  }
+
+  private async handleWorktreeCleanup(
+    input: string,
+    ctx: ConversationContext,
+  ): Promise<ConversationResponse> {
+    const includeClaude = /\b(all|every)\b/i.test(input);
+    await runWorktreeCleanup(ctx.rootPath, this.ui, { includeClaude });
     return { handled: true, shouldQuit: false };
+  }
+
+  private async handleSessionAwareness(ctx: ConversationContext): Promise<ConversationResponse> {
+    const repoName = path.basename(ctx.rootPath);
+    const branch   = ctx.branch ?? 'unknown';
+    const snap     = this.ui.getContextSnapshot();
+
+    let indexLine = 'not indexed (run `koda init`)';
+    try {
+      const meta = await loadIndexMetadata(ctx.rootPath);
+      indexLine = `${meta.fileCount} files · ${meta.chunkCount} chunks · ${meta.edgeCount} deps`;
+    } catch { /* no index */ }
+
+    let modelLine = 'not configured (run `koda login`)';
+    if (ctx.hasConfig) {
+      try {
+        const cfg = await loadConfig();
+        modelLine = `${cfg.provider} / ${cfg.model ?? 'default'}`;
+      } catch {
+        modelLine = 'configured';
+      }
+    }
+
+    let worktreeLine = 'main repo';
+    try {
+      const wt = await WorktreeSession.load(ctx.rootPath);
+      const active = wt.getActive();
+      if (active) {
+        worktreeLine = `active · branch ${active.branchName} · ${active.worktreePath}`;
+      }
+    } catch { /* ok */ }
+
+    const lines: string[] = [
+      `Repo:     ${repoName} (${ctx.rootPath})`,
+      `Branch:   ${branch}`,
+      `Index:    ${indexLine}`,
+      `Model:    ${modelLine}`,
+      `Worktree: ${worktreeLine}`,
+      '',
+      'Each turn is stateless — I search the index for your question and do not retain prior chat unless you paste it.',
+    ];
+
+    if (snap.files.length > 0) {
+      lines.push('', 'Last retrieved context this session:');
+      for (const f of snap.files.slice(0, 8)) lines.push(`  · ${f}`);
+      if (snap.files.length > 8) lines.push(`  · … +${snap.files.length - 8} more`);
+      lines.push(`(${snap.files.length} files · ~${snap.tokens} tokens)`);
+    } else {
+      lines.push('', 'No files retrieved yet this session. Ask a codebase question or run /context.');
+    }
+
+    lines.push('', 'Slash: /status · /context · /help · /worktree list');
+
+    this.ui.renderStreamChunk(lines.join('\n'));
+    this.ui.renderStreamEnd();
+    return { handled: true, shouldQuit: false, instant: true };
   }
 
   private async handleStatus(ctx: ConversationContext): Promise<ConversationResponse> {
@@ -854,7 +1030,7 @@ export class ConversationEngine {
     } catch {
       this.ui.renderError('No index found.', 'Run `koda init` to index this repository.');
     }
-    return { handled: true, shouldQuit: false };
+    return { handled: true, shouldQuit: false, instant: true };
   }
 
   // ── Local search fallback (no AI config) ─────────────────────────────────

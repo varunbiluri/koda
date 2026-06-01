@@ -10,7 +10,7 @@ export class VerificationEngine {
       warnings: [],
     };
 
-    logger.info('Starting verification');
+    logger.debug('Starting verification');
 
     // 1. Type check
     const typeCheckResult = await this.verifyTypeCheck(rootPath);
@@ -50,7 +50,7 @@ export class VerificationEngine {
       result.warnings.push('Skipped tests because build failed');
     }
 
-    logger.info(`Verification ${result.success ? 'passed' : 'failed'}`);
+    logger.debug(`Verification ${result.success ? 'passed' : 'failed'}`);
     return result;
   }
 

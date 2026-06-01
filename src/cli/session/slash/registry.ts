@@ -56,7 +56,9 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
 
   // Git & code
   { name: '/commit',   description: 'AI commit message from staged diff + approval', category: 'git' },
+  { name: '/pr',       description: 'Push branch and open GitHub PR (gh CLI)', category: 'git' },
   { name: '/diff',     description: 'Show pending git changes', category: 'git' },
+  { name: '/worktree', description: 'Git worktree (enter|merge|discard|list|clean)', category: 'git' },
   { name: '/review',   description: 'Run code review on recent changes', category: 'git' },
   { name: '/pr_comments', description: 'Show PR review comments (gh CLI)', category: 'git' },
   { name: '/undo',     description: 'Revert file changes', category: 'git', wip: true },
@@ -68,6 +70,8 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: '/init',     description: 'Index this repository', category: 'tools' },
   { name: '/status',   description: 'Repository and index status', category: 'tools' },
   { name: '/permissions', description: 'Show tool permission tiers', category: 'tools' },
+  { name: '/trust',       description: 'Auto-approve run/write tools for this session', category: 'tools' },
+  { name: '/verbose',     description: 'Toggle detailed tool traces + debug logs', category: 'tools' },
 
   // Config & auth
   { name: '/config',   description: 'Show AI configuration', category: 'config' },

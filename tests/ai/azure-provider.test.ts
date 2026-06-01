@@ -128,4 +128,26 @@ describe('AzureAIProvider', () => {
     const callArgs = mockFetch.mock.calls[0];
     expect(callArgs[0]).toContain('api-version=2023-12-01');
   });
+
+  it('uses Foundry v1 chat completions URL for services.ai.azure.com', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: 'x',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      }),
+    });
+
+    const v1Config: AIConfig = {
+      ...config,
+      endpoint: 'https://01-dev.services.ai.azure.com/openai/v1/',
+      model: 'DeepSeek-V4-Pro',
+    };
+    const provider = new AzureAIProvider(v1Config);
+    await provider.sendChatCompletion({ messages: [{ role: 'user', content: 'test' }] });
+
+    const callArgs = mockFetch.mock.calls[0];
+    expect(callArgs[0]).toBe('https://01-dev.services.ai.azure.com/openai/v1/chat/completions');
+    expect(JSON.parse(callArgs[1].body as string).model).toBe('DeepSeek-V4-Pro');
+  });
 });

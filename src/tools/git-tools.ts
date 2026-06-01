@@ -1,3 +1,6 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { runTerminal } from './terminal-tools.js';
 import type { ToolResult } from './types.js';
 
@@ -114,14 +117,23 @@ export async function gitCreatePr(
   body: string,
   rootPath: string,
 ): Promise<ToolResult<string>> {
-  const safeTitle = title.replace(/"/g, '\\"');
-  const safeBody = body.replace(/"/g, '\\"');
-  const result = await runTerminal(
-    `gh pr create --title "${safeTitle}" --body "${safeBody}"`,
-    rootPath,
-  );
-  if (result.success && result.data) {
-    return { success: true, data: result.data.stdout.trim() };
+  // Write body to a temp file — inline --body breaks on backticks, $, quotes in markdown.
+  const bodyFile = path.join(os.tmpdir(), `koda-pr-body-${process.pid}-${Date.now()}.md`);
+  await fs.writeFile(bodyFile, body, 'utf8');
+
+  try {
+    const safeTitle = title.replace(/"/g, '\\"');
+    const safeFile  = bodyFile.replace(/"/g, '\\"');
+    const result = await runTerminal(
+      `gh pr create --title "${safeTitle}" --body-file "${safeFile}"`,
+      rootPath,
+    );
+    if (result.success && result.data) {
+      return { success: true, data: result.data.stdout.trim() };
+    }
+    const detail = result.data?.stderr?.trim() || result.error || 'gh pr create failed';
+    return { success: false, error: detail };
+  } finally {
+    await fs.unlink(bodyFile).catch(() => undefined);
   }
-  return { success: false, error: result.error };
 }

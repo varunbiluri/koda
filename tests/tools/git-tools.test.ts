@@ -90,7 +90,7 @@ describe('gitPush', () => {
 });
 
 describe('gitCreatePr', () => {
-  it('calls gh pr create with title and body', async () => {
+  it('calls gh pr create with title and body-file', async () => {
     mockRun.mockResolvedValue({
       success: true,
       data: { stdout: 'https://github.com/org/repo/pull/42', stderr: '', exitCode: 0 },
@@ -98,10 +98,23 @@ describe('gitCreatePr', () => {
     const result = await gitCreatePr('Add feature', 'Detailed description', '/repo');
     expect(result.success).toBe(true);
     expect(result.data).toContain('pull/42');
-    expect(mockRun).toHaveBeenCalledWith(
-      expect.stringContaining('gh pr create'),
-      '/repo',
-    );
+    const cmd = mockRun.mock.calls[0][0] as string;
+    expect(cmd).toContain('gh pr create');
+    expect(cmd).toContain('--body-file');
+    expect(cmd).not.toContain('--body "');
+  });
+
+  it('uses body-file so markdown backticks are not executed by the shell', async () => {
+    mockRun.mockResolvedValue({
+      success: true,
+      data: { stdout: 'https://github.com/org/repo/pull/43', stderr: '', exitCode: 0 },
+    });
+    const body = 'See `docs/` and `index.html` for details.';
+    const result = await gitCreatePr('Docs update', body, '/repo');
+    expect(result.success).toBe(true);
+    const cmd = mockRun.mock.calls[0][0] as string;
+    expect(cmd).not.toContain('docs/');
+    expect(cmd).toContain('--body-file');
   });
 });
 

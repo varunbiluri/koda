@@ -8,6 +8,7 @@ import { failureAnalyzer } from './failure-analyzer.js';
 import { ToolPlanner, formatToolPlan } from '../planning/tool-planner.js';
 import type { ToolPlan } from '../planning/tool-planner.js';
 import { logger } from '../utils/logger.js';
+import * as path from 'node:path';
 
 // ── Public constants ──────────────────────────────────────────────────────────
 
@@ -99,7 +100,13 @@ export class PlanExecutor {
     signal?:        AbortSignal,
     taskName?:      string,
     taskComplexity?: string,
-  ): Promise<{ response: string; metrics: Omit<ExecutionMetrics, 'verificationStatus'>; worktreePath?: string }> {
+  ): Promise<{
+    response: string;
+    metrics: Omit<ExecutionMetrics, 'verificationStatus'>;
+    worktreePath?: string;
+    taskName?: string;
+    autoWorktree?: boolean;
+  }> {
     const startTime = Date.now();
     let fullResponse  = '';
     let stepsExecuted = 0;
@@ -107,20 +114,33 @@ export class PlanExecutor {
     let successfulSteps = 0;
     let failedSteps = 0;
 
-    // ── Worktree isolation ─────────────────────────────────────────────────
+    // ── Worktree isolation (write tasks only) ───────────────────────────────
     const effectiveTaskName = taskName ?? `task-${Date.now()}`;
     let worktreePath: string | undefined;
+    const alreadyIsolated = this.chatContext.rootPath.includes(
+      `${path.sep}.koda${path.sep}worktrees${path.sep}`,
+    );
+    const needsIsolation = plan.steps.some((s) =>
+      /\b(implement|fix|add|write|modify|update|refactor|create|remove|delete|patch|commit|merge)\b/i.test(s.description),
+    );
 
-    try {
-      worktreePath = await this.worktreeManager.createWorktree(effectiveTaskName);
-      onStage?.(`WORKTREE created ${worktreePath}`);
-      logger.debug(`[plan-executor] Worktree created: ${worktreePath}`);
-    } catch (err) {
-      // Non-fatal: if git worktrees are not supported (e.g. shallow clones),
-      // fall back to executing in the main working tree
-      logger.warn(`[plan-executor] Worktree creation failed — falling back to main tree: ${(err as Error).message}`);
-      onStage?.(`WARN Worktree unavailable — executing in main tree`);
+    if (needsIsolation && !alreadyIsolated) {
+      try {
+        worktreePath = await this.worktreeManager.createWorktree(effectiveTaskName);
+        onStage?.(`WORKTREE created ${worktreePath}`);
+        logger.debug(`[plan-executor] Worktree created: ${worktreePath}`);
+      } catch (err) {
+        logger.warn(`[plan-executor] Worktree creation failed — falling back to main tree: ${(err as Error).message}`);
+        onStage?.(`WARN Worktree unavailable — executing in main tree`);
+      }
+    } else if (alreadyIsolated) {
+      worktreePath = this.chatContext.rootPath;
+      onStage?.(`WORKTREE using ${worktreePath}`);
     }
+
+    const execContext = worktreePath
+      ? { ...this.chatContext, rootPath: worktreePath, repoName: path.basename(worktreePath) }
+      : this.chatContext;
 
     // Use a local copy of history to avoid mutating the caller's array
     const localHistory: ChatMessage[] = [...history];
@@ -144,7 +164,7 @@ export class PlanExecutor {
     for (let i = 0; i < steps.length; i++) {
       if (signal?.aborted) {
         logger.debug('[plan-executor] Aborted between steps');
-        break;
+        throw new DOMException('The operation was aborted', 'AbortError');
       }
 
       if (this.totalToolCalls >= MAX_TOOL_CALLS) {
@@ -179,7 +199,7 @@ export class PlanExecutor {
       try {
         await engine.chat(
           stepPrompt,
-          this.chatContext,
+          execContext,
           localHistory,
           (chunk) => {
             stepResponse += chunk;
@@ -297,6 +317,8 @@ export class PlanExecutor {
         ...(taskComplexity ? { taskComplexity } : {}),
       },
       worktreePath,
+      taskName: effectiveTaskName,
+      autoWorktree: Boolean(worktreePath && !alreadyIsolated),
     };
   }
 

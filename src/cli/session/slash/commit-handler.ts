@@ -100,19 +100,51 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
   }
 
   if (!stagedDiff) {
-    ui.renderInfo('Nothing staged. Stage files first, then run /commit again.');
-    console.log(chalk.gray('  git add <file>   or ask Koda to stage changes'));
+    let unstaged = '';
     try {
-      const status = gitExec(rootPath, 'status --short');
-      if (status) {
-        console.log();
-        console.log(chalk.gray(status.split('\n').map((l) => `  ${l}`).join('\n')));
-      }
+      unstaged = gitExec(rootPath, 'status --porcelain');
     } catch {
-      // ignore
+      unstaged = '';
     }
+
+    if (!unstaged) {
+      ui.renderInfo('Nothing to commit — working tree clean.');
+      console.log();
+      return;
+    }
+
+    const fileCount = unstaged.split('\n').filter(Boolean).length;
+    ui.renderInfo(`Nothing staged — ${fileCount} changed file(s).`);
+    console.log(chalk.gray('  Will stage all changes (git add -A), then commit.'));
     console.log();
-    return;
+    console.log(chalk.gray(unstaged.split('\n').map((l) => `  ${l}`).join('\n')));
+    console.log();
+
+    const stageOk = await permissionGate.requestApproval(
+      'git_add',
+      'Stage all changes (git add -A)',
+    );
+    if (!stageOk) {
+      ui.renderInfo('Commit cancelled.');
+      console.log();
+      return;
+    }
+
+    try {
+      gitExec(rootPath, 'add -A');
+      stagedDiff = gitExec(rootPath, 'diff --staged');
+      nameStatus = gitExec(rootPath, 'diff --staged --name-status');
+    } catch (err) {
+      ui.renderError(`Could not stage changes: ${(err as Error).message}`);
+      console.log();
+      return;
+    }
+
+    if (!stagedDiff) {
+      ui.renderError('Nothing staged after git add -A.');
+      console.log();
+      return;
+    }
   }
 
   let message: string;

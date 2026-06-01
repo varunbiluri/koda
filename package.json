@@ -13,7 +13,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark:kcb10": "tsx benchmarks/kcb-10/runner.ts --mock",
-    "benchmark:kcb10:live": "tsx benchmarks/kcb-10/runner.ts --live"
+    "benchmark:kcb10:live": "tsx benchmarks/kcb-10/runner.ts --live",
+    "serve": "tsx src/index.ts serve",
+    "app:desktop": "pnpm build && cd apps/desktop && npm install && npm start",
+    "app:desktop:mac": "pnpm build && cd apps/desktop && npm install && npm run pack:mac",
+    "app:desktop:win": "pnpm build && cd apps/desktop && npm install && npm run pack:win"
   },
   "keywords": [
     "ai",

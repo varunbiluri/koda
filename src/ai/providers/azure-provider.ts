@@ -40,16 +40,39 @@ export class AzureAIProvider implements AIProvider {
   private apiKey: string;
   private model: string;
   private apiVersion: string;
+  private readonly v1Api: boolean;
 
   constructor(config: AIConfig) {
     this.endpoint = config.endpoint.replace(/\/$/, ''); // Remove trailing slash
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.apiVersion = config.apiVersion ?? '2024-05-01-preview';
+    this.v1Api = AzureAIProvider.isFoundryV1Endpoint(this.endpoint);
   }
 
-  private getDeploymentUrl(): string {
+  /** Azure AI Foundry / OpenAI v1-compatible base (supports DeepSeek, Grok, etc.). */
+  static isFoundryV1Endpoint(endpoint: string): boolean {
+    const base = endpoint.replace(/\/$/, '');
+    return /\/openai\/v1$/i.test(base);
+  }
+
+  private chatCompletionsUrl(): string {
+    if (this.v1Api) {
+      return `${this.endpoint}/chat/completions`;
+    }
     return `${this.endpoint}/openai/deployments/${this.model}/chat/completions?api-version=${this.apiVersion}`;
+  }
+
+  private deploymentsListUrl(): string {
+    if (this.v1Api) {
+      return `${this.endpoint}/models`;
+    }
+    return `${this.endpoint}/openai/deployments?api-version=${this.apiVersion}`;
+  }
+
+  /** @deprecated use chatCompletionsUrl */
+  private getDeploymentUrl(): string {
+    return this.chatCompletionsUrl();
   }
 
   private getUrl(path: string): string {
@@ -67,6 +90,21 @@ export class AzureAIProvider implements AIProvider {
     apiVersion = '2024-05-01-preview',
   ): Promise<DeploymentInfo[]> {
     const base = endpoint.replace(/\/$/, '');
+
+    if (AzureAIProvider.isFoundryV1Endpoint(base)) {
+      const url = `${base}/models`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { 'api-key': apiKey },
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Azure API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`);
+      }
+      const data = (await response.json()) as { data?: Array<{ id: string }> };
+      return (data.data ?? []).map((d) => ({ id: d.id, model: d.id }));
+    }
+
     const url = `${base}/openai/deployments?api-version=${apiVersion}`;
     const response = await fetch(url, {
       method: 'GET',
@@ -83,7 +121,13 @@ export class AzureAIProvider implements AIProvider {
    * Return only deployments whose underlying model supports /chat/completions.
    * Rejects embeddings, codex, image-generation, whisper, TTS, and DALL-E deployments.
    */
-  static filterChatCompatible(deployments: DeploymentInfo[]): DeploymentInfo[] {
+  static filterChatCompatible(
+    deployments: DeploymentInfo[],
+    endpoint?: string,
+  ): DeploymentInfo[] {
+    if (endpoint && AzureAIProvider.isFoundryV1Endpoint(endpoint)) {
+      return deployments.filter((d) => !CHAT_BLOCKED_PATTERNS.some((p) => p.test(d.model)));
+    }
     return deployments.filter(
       (d) =>
         CHAT_ALLOWED_PATTERNS.some((p) => p.test(d.model)) &&
@@ -103,6 +147,25 @@ export class AzureAIProvider implements AIProvider {
     apiVersion = '2024-05-01-preview',
   ): Promise<void> {
     const base = endpoint.replace(/\/$/, '');
+
+    if (AzureAIProvider.isFoundryV1Endpoint(base)) {
+      const url = `${base}/chat/completions`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
+        body: JSON.stringify({
+          model: deploymentId,
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 1,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Azure API error: ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`);
+      }
+      return;
+    }
+
     const url = `${base}/openai/deployments/${deploymentId}/chat/completions?api-version=${apiVersion}`;
     const response = await fetch(url, {
       method: 'POST',
@@ -120,12 +183,13 @@ export class AzureAIProvider implements AIProvider {
 
   /** Lightweight connection test — sends a minimal request to the deployment endpoint. */
   async testConnection(): Promise<void> {
-    const url = this.getDeploymentUrl();
+    const url = this.chatCompletionsUrl();
     logger.debug(`Testing connection to ${url}`);
     const response = await fetch(url, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({
+        ...(this.v1Api ? { model: this.model } : {}),
         messages: [{ role: 'user', content: 'ping' }],
         max_tokens: 1,
       }),
@@ -149,7 +213,7 @@ export class AzureAIProvider implements AIProvider {
   }
 
   async sendChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const url = this.getDeploymentUrl();
+    const url = this.chatCompletionsUrl();
 
     logger.debug(`Azure API request to ${url}`);
 
@@ -158,6 +222,7 @@ export class AzureAIProvider implements AIProvider {
       headers: this.getHeaders(),
       body: JSON.stringify({
         ...request,
+        ...(this.v1Api ? { model: this.model } : {}),
         stream: false,
       }),
     });
@@ -176,7 +241,7 @@ export class AzureAIProvider implements AIProvider {
     request: ChatCompletionRequest,
     onChunk: (chunk: string) => void,
   ): Promise<void> {
-    const url = this.getDeploymentUrl();
+    const url = this.chatCompletionsUrl();
 
     logger.debug(`Azure API streaming request to ${url}`);
 
@@ -185,6 +250,7 @@ export class AzureAIProvider implements AIProvider {
       headers: this.getHeaders(true),
       body: JSON.stringify({
         ...request,
+        ...(this.v1Api ? { model: this.model } : {}),
         stream: true,
       }),
     });
@@ -236,7 +302,7 @@ export class AzureAIProvider implements AIProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const url = this.getUrl('/openai/deployments');
+    const url = this.deploymentsListUrl();
 
     logger.debug(`Fetching models from ${url}`);
 
@@ -253,13 +319,14 @@ export class AzureAIProvider implements AIProvider {
       throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
     }
 
-    const data = (await response.json()) as { data?: Array<{ id: string; model: string }> };
+    const data = (await response.json()) as {
+      data?: Array<{ id: string; model?: string }>;
+    };
 
-    // Azure returns { data: [ { id: "...", model: "...", ... } ] }
     const deployments = data.data ?? [];
     return deployments.map((d) => ({
       id: d.id,
-      name: d.model,
+      name: d.model ?? d.id,
       capabilities: ['chat'],
     }));
   }

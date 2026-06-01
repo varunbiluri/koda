@@ -1,3 +1,4 @@
+import * as fs from 'node:fs/promises';
 import * as readline from 'node:readline';
 import * as path from 'node:path';
 import { execSync } from 'child_process';
@@ -8,8 +9,24 @@ import { handleSlashCommand } from './slash-commands.js';
 import { loadIndex } from '../../store/index-store.js';
 import { configExists, loadConfig } from '../../ai/config-store.js';
 import { mcpManager } from '../../mcp/mcp-manager.js';
+import { permissionGate } from '../../runtime/permission-gate.js';
 import { runProviderSetup } from '../../ai/providers/provider-setup.js';
+import { attachSlashMenu, slashCompleter, type SlashMenuHandle } from './slash/completer.js';
+import {
+  attachPasteHandler,
+  disableBracketedPaste,
+  enableBracketedPaste,
+  isPasteActive,
+  type PasteHandlerHandle,
+} from './paste-handler.js';
+import { applyCliLogDefaults, applyReplLogDefaults, LogLevel, setLogLevel, getLogLevel } from '../../utils/logger.js';
+import { WorktreeSession } from '../../runtime/worktree-session.js';
 import type { RepoIndex } from '../../types/index.js';
+import {
+  clearReadlineInput,
+  normalizePauseChoice,
+  renderPauseMenu,
+} from './pause-menu.js';
 
 /**
  * SessionManager — entry point for the conversational Koda session.
@@ -35,6 +52,19 @@ export class SessionManager {
   private lastFilesChanged: string[] = [];
   /** Last task was a write operation (for smart suggestions). */
   private lastWasWrite = false;
+  /** True while an AI turn is in flight — blocks concurrent line handlers. */
+  private busy = false;
+  /** Suppress suggestion chips until the user has sent at least one message. */
+  private showSuggestions = false;
+  /** Live slash-command menu attached to readline. */
+  private slashMenu: SlashMenuHandle | null = null;
+  private pasteHandler: PasteHandlerHandle | null = null;
+  /** Double Ctrl+C within this window cancels immediately. */
+  private lastSigintAt = 0;
+  /** True when the user explicitly quit — distinguishes from accidental stdin disconnect. */
+  private shuttingDown = false;
+  /** Git worktree session (enter / merge / discard). */
+  private worktreeSession: WorktreeSession | null = null;
 
   constructor(ui?: UIRenderer, engine?: ConversationEngine) {
     this.ui = ui ?? new UIRenderer();
@@ -42,6 +72,8 @@ export class SessionManager {
   }
 
   async start(rootPath: string = process.cwd()): Promise<void> {
+    applyReplLogDefaults();
+
     // 1. Gather context
     const repoName = path.basename(rootPath);
     const branch = getGitBranch(rootPath);
@@ -68,11 +100,36 @@ export class SessionManager {
       }
     }
 
-    // 4. Render header
-    this.headerCtx = { repoName, branch, indexStatus, model };
+    // 4. Worktree session (restore if previously entered)
+    this.worktreeSession = await WorktreeSession.load(rootPath);
+    const effectiveRoot   = this.worktreeSession.getEffectiveRoot();
+    const effectiveBranch = getGitBranch(effectiveRoot);
+    const activeWorktree  = this.worktreeSession.getActive();
+
+    // 5. Connect MCP (optional) before rendering dashboard
+    mcpManager.setRootPath(rootPath);
+    const mcpIssues = await mcpManager.ensureConnected(rootPath);
+    const recentActivity = await loadRecentActivity(rootPath);
+
+    // 6. Render Claude Code–style welcome dashboard
+    this.headerCtx = {
+      repoName,
+      branch: effectiveBranch,
+      indexStatus,
+      model,
+      rootPath: effectiveRoot,
+      mcpIssues,
+      recentActivity,
+      worktree: activeWorktree ?? undefined,
+    };
     this.ui.renderHeader(this.headerCtx);
 
-    // 5. Setup wizard if no config
+    if (activeWorktree) {
+      this.ui.renderInfo(`Resumed worktree · ${activeWorktree.branchName}`);
+      console.log();
+    }
+
+    // 7. Setup wizard if no config
     if (!hasConfig) {
       const configured = await this.runSetupWizard();
       if (configured) {
@@ -85,78 +142,109 @@ export class SessionManager {
       }
     }
 
-    // 6. Suggest init if no index
+    // 8. Suggest init if no index
     if (indexStatus === 'missing') {
       this.ui.renderInfo('No index found. Run `koda init` to index this repository, or type "init" to do it now.');
       console.log();
     }
 
-    // 7. Restore persisted session history
+    // 9. Restore persisted session history
     const restoredCount = await this.engine.loadPersistedSession(rootPath);
     if (restoredCount > 0) {
       this.ui.renderInfo(`Resumed session · ${restoredCount} messages`);
       console.log();
     }
 
-    // 8. Connect MCP servers in background (non-fatal)
-    mcpManager.setRootPath(rootPath);
-    mcpManager.ensureConnected(rootPath).catch(() => {
-      // MCP optional — failures surfaced via /mcp list
+    // 10. Start conversation loop
+    await this.loop({
+      rootPath: effectiveRoot,
+      index,
+      hasConfig: await configExists(),
+      branch: effectiveBranch,
     });
-
-    // 9. Start conversation loop
-    this.ui.renderWelcome();
-    await this.loop({ rootPath, index, hasConfig: await configExists(), branch });
   }
 
   private async loop(ctx: ConversationContext): Promise<void> {
+    enableBracketedPaste();
+
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       terminal: true,
       historySize: 100,
+      completer: slashCompleter,
+    });
+    permissionGate.bindReadline(this.rl);
+    permissionGate.bindBeforePrompt(() => this.ui.stopSpinner());
+    this.slashMenu = attachSlashMenu(this.rl, (cmds, selectedIndex) => {
+      this.ui.renderSlashMenu(cmds, selectedIndex);
+    });
+    // Attach paste handler last so its prependListener runs before slash-menu arrows.
+    this.pasteHandler = attachPasteHandler(this.rl, {
+      isInputBlocked: () => this.busy || this.pauseMenuActive,
+      onTruncated: (len, max) => {
+        this.ui.renderInfo(`Paste trimmed to ${max.toLocaleString()} chars (was ${len.toLocaleString()}).`);
+      },
+    });
+    this.rl.once('close', () => {
+      permissionGate.unbindReadline();
+      this.slashMenu?.detach();
+      this.pasteHandler?.detach();
+      disableBracketedPaste();
     });
 
     // ── Ctrl+C: pause menu when task is active, else exit ────────────────────
     this.rl.on('SIGINT', () => {
       if (this.activeAbort && !this.pauseMenuActive) {
-        // Show pause menu without cancelling yet
-        this.pauseMenuActive = true;
-        process.stdout.write('\n\n');
-        console.log(`  ${chalk.bold('Task paused')}  ${chalk.gray('(task is still running)')}`);
-        console.log();
-        console.log(`  ${chalk.cyan('[1]')} ${chalk.white('Resume')}      continue the current task`);
-        console.log(`  ${chalk.cyan('[2]')} ${chalk.white('Cancel')}      stop the task`);
-        console.log(`  ${chalk.cyan('[3]')} ${chalk.white('Modify')}      cancel and enter a revised instruction`);
-        console.log();
-        process.stdout.write(chalk.cyan('> '));
-
-        const resumeListener = (line: string): void => {
-          const choice = line.trim();
-          this.rl?.removeListener('line', resumeListener);
+        const now = Date.now();
+        if (now - this.lastSigintAt < 900) {
+          this.activeAbort.abort();
+          this.activeAbort = null;
           this.pauseMenuActive = false;
+          this.ui.stopSpinner(false, 'cancelled');
+          console.log();
+          this.ui.renderInfo('Task cancelled.');
+          console.log();
+          this.busy = false;
+          ask();
+          this.lastSigintAt = 0;
+          return;
+        }
+        this.lastSigintAt = now;
 
-          if (choice === '2') {
+        this.pauseMenuActive = true;
+        clearReadlineInput(this.rl!);
+        renderPauseMenu();
+
+        this.rl!.question(chalk.cyan('  Choice [1/2/3]: '), (answer) => {
+          this.pauseMenuActive = false;
+          const choice = normalizePauseChoice(answer);
+
+          if (choice === 'cancel') {
             this.activeAbort?.abort();
             this.activeAbort = null;
+            this.busy = false;
+            this.ui.stopSpinner(false, 'cancelled');
             console.log();
             this.ui.renderInfo('Task cancelled.');
             console.log();
             ask();
-          } else if (choice === '3') {
+          } else if (choice === 'modify') {
             this.activeAbort?.abort();
             this.activeAbort = null;
+            this.busy = false;
+            this.ui.stopSpinner(false, 'cancelled');
             console.log();
             this.ui.renderInfo('Enter a revised instruction:');
             ask();
           } else {
-            // '1' or any other input → resume
+            console.log();
             this.ui.renderInfo('Resuming…');
+            console.log();
           }
-        };
-
-        this.rl?.once('line', resumeListener);
+        });
       } else if (!this.activeAbort && !this.pauseMenuActive) {
+        this.shuttingDown = true;
         console.log('\n\n  ' + chalk.gray('Goodbye!'));
         this.rl?.close();
       }
@@ -166,15 +254,32 @@ export class SessionManager {
       if ((process.stdout as NodeJS.WriteStream & { _lastChar?: string })._lastChar !== '\n') {
         process.stdout.write('\n');
       }
-      this._renderSuggestions(ctx);
-      this.ui.renderPrompt();
+      const active = this.worktreeSession?.getActive();
+      if (active) {
+        this.ui.renderWorktreePromptBanner(active);
+      }
+      if (this.showSuggestions) {
+        this._renderSuggestions(ctx);
+        this.ui.renderPrompt('');
+      } else {
+        this.ui.renderPrompt(active ? 'Work in isolation — /worktree merge when done' : undefined);
+      }
     };
 
     ask();
 
     this.rl.on('line', async (rawLine) => {
-      const input = rawLine.trim();
+      if (this.busy || this.pauseMenuActive) return;
+
+      let input = rawLine.trim();
       if (!input) { ask(); return; }
+
+      // Apply slash-menu selection before clearing (e.g. `/int` + Enter → `/init`)
+      if (input.startsWith('/') && this.slashMenu) {
+        input = this.slashMenu.resolveInput(input);
+      }
+
+      this.slashMenu?.clear();
 
       // ── Slash commands ──────────────────────────────────────────────────────
       if (input.startsWith('/')) {
@@ -186,8 +291,15 @@ export class SessionManager {
           runSetupWizard:  () => this.runSetupWizard(),
           handleInlineInit:(c) => this.handleInlineInit(c),
           handleDiff:      (c) => this.handleDiff(c),
+          toggleVerbose:   () => this.toggleVerboseLogs(),
+          worktreeSession: this.worktreeSession ?? undefined,
+          onWorktreeRootChange: (root, branch) => {
+            ctx.rootPath = root;
+            ctx.branch = branch;
+          },
         });
         if (result === 'quit') {
+          this.shuttingDown = true;
           this.rl?.close();
           return;
         }
@@ -206,13 +318,18 @@ export class SessionManager {
       this.lastInput      = input;
       this.lastWasWrite   = false;
       this.lastFilesChanged = [];
-      this.activeAbort = new AbortController();
+      this.showSuggestions = true;
+
+      const instant = this.engine.isInstantTurn(input, ctx);
+      if (!instant) {
+        this.activeAbort = new AbortController();
+        this.busy = true;
+        console.log(chalk.gray('  Ctrl+C pause · Ctrl+C twice cancel'));
+      }
 
       // ── Diff-first approval callback (Part 2 — Diff-First Editing) ─────────
       const onDiff = async (filePath: string, oldContent: string, newContent: string): Promise<boolean> => {
         this.ui.renderDiffPreview(filePath, oldContent, newContent);
-        // Use the permission gate's readline prompt to ask [Y/n/e]
-        const { permissionGate } = await import('../../runtime/permission-gate.js');
         const approved = await permissionGate.requestApprovalWithDiff(
           `write ${filePath}`,
           '', // diff already rendered above via renderDiffPreview
@@ -225,24 +342,70 @@ export class SessionManager {
       };
 
       try {
-        const response = await this.engine.process(input, ctx, this.activeAbort.signal, onDiff);
+        const response = await this.engine.process(
+          input,
+          ctx,
+          this.activeAbort?.signal,
+          onDiff,
+        );
         if (response.shouldQuit) {
+          this.shuttingDown = true;
           console.log('\n  ' + chalk.gray('Goodbye!'));
           this.rl?.close();
           return;
         }
       } catch (err) {
-        this.ui.renderError((err as Error).message);
+        const aborted =
+          (err as Error).name === 'AbortError' ||
+          (err as DOMException).name === 'AbortError';
+        if (aborted) {
+          this.ui.stopSpinner(false, 'cancelled');
+          this.ui.renderInfo('Task cancelled.');
+        } else {
+          this.ui.renderError((err as Error).message);
+        }
       } finally {
-        this.activeAbort = null;
+        if (!instant) {
+          this.activeAbort = null;
+          this.busy = false;
+        }
+        if (process.stdin.isPaused()) {
+          process.stdin.resume();
+        }
       }
 
       ask();
     });
 
     await new Promise<void>((resolve) => {
-      this.rl!.on('close', resolve);
+      this.rl!.on('close', () => {
+        applyCliLogDefaults();
+        if (!this.shuttingDown) {
+          console.log(
+            '\n  ' + chalk.yellow('Session ended unexpectedly.') +
+            chalk.gray(' Run `node bin/koda.js` again to continue.'),
+          );
+        }
+        resolve();
+      });
     });
+  }
+
+  /** Toggle internal logs + tool-stage lines. Returns new verbose state. */
+  toggleVerboseLogs(): boolean {
+    const verbose = getLogLevel() <= LogLevel.DEBUG || this.ui.isStreamVerbose();
+    if (verbose) {
+      setLogLevel(LogLevel.ERROR);
+      this.ui.setStreamVerbose(false);
+      return false;
+    }
+    setLogLevel(LogLevel.DEBUG);
+    this.ui.setStreamVerbose(true);
+    return true;
+  }
+
+  isVerboseLogging(): boolean {
+    return getLogLevel() <= LogLevel.DEBUG || this.ui.isStreamVerbose();
   }
 
   private async handleDiff(ctx: ConversationContext): Promise<void> {
@@ -362,6 +525,18 @@ export class SessionManager {
   }
 }
 
+
+async function loadRecentActivity(rootPath: string): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(path.join(rootPath, '.koda', 'metrics.json'), 'utf8');
+    const store = JSON.parse(raw) as { recentTasks?: Array<{ description?: string }> };
+    return (store.recentTasks ?? [])
+      .map((t) => t.description?.trim())
+      .filter((d): d is string => Boolean(d));
+  } catch {
+    return [];
+  }
+}
 
 function getGitBranch(rootPath: string): string {
   try {

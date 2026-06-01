@@ -1,8 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import chalk from 'chalk';
-import prompts from 'prompts';
+import { permissionGate } from '../runtime/permission-gate.js';
 
 export type RiskLevel = 'safe' | 'medium' | 'high';
 
@@ -100,37 +99,23 @@ export class PermissionManager {
   static async check(command: string): Promise<boolean> {
     if (process.env.KODA_SKIP_PERMISSIONS === 'true') return true;
 
-    const risk = this.classifyRisk(command);
+    if (permissionGate.hasSessionTrust()) return true;
+
+    const trimmed = command.trim();
+    const risk = this.classifyRisk(trimmed);
     if (risk === 'safe') return true;
 
-    const approved = await this.loadApproved();
-    if (approved.includes(command.trim())) return true;
+    const approved = await PermissionManager.loadApproved();
+    if (approved.includes(trimmed)) return true;
 
-    console.log();
-    console.log(
-      '  ' + chalk.yellow('⚠') + '  ' + chalk.bold('Command requires approval'),
-    );
-    console.log();
-    console.log('  ' + chalk.white(command.trim()));
-    console.log();
-
-    const { choice } = await prompts({
-      type: 'select',
-      name: 'choice',
-      message: 'Do you want to proceed?',
-      choices: [
-        { title: 'Yes', value: 'yes' },
-        { title: 'Yes, and remember this command', value: 'remember' },
-        { title: 'No', value: 'no' },
-      ],
-    });
-
-    if (!choice || choice === 'no') return false;
-
-    if (choice === 'remember') {
-      await this.persistApproval(command.trim());
+    if (!process.stdin.isTTY) {
+      return false;
     }
 
-    return true;
+    const ok = await permissionGate.requestApproval('run_terminal', trimmed);
+    if (ok && permissionGate.hasSessionTrust()) {
+      await PermissionManager.persistApproval(trimmed);
+    }
+    return ok;
   }
 }

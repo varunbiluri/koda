@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { runIndexingPipeline } from '../../src/engine/indexing-pipeline.js';
 import { loadIndex, loadIndexMetadata } from '../../src/store/index-store.js';
+import { VERSION } from '../../src/constants.js';
 
 const FIXTURE_PROJECT = path.resolve(__dirname, '../fixtures/sample-project');
 const KODA_DIR = path.join(FIXTURE_PROJECT, '.koda');
@@ -33,7 +34,7 @@ describe('init integration', () => {
     await runIndexingPipeline(FIXTURE_PROJECT, { force: true });
 
     const meta = await loadIndexMetadata(FIXTURE_PROJECT);
-    expect(meta.version).toBe('0.1.1');
+    expect(meta.version).toBe(VERSION);
     expect(meta.fileCount).toBeGreaterThan(0);
     expect(meta.chunkCount).toBeGreaterThan(0);
     expect(meta.rootPath).toBe(FIXTURE_PROJECT);

@@ -159,3 +159,42 @@ describe('PermissionGate.requestApproval()', () => {
     expect(gate.hasSessionTrust()).toBe(true);
   });
 });
+
+describe('PermissionGate.bindReadline()', () => {
+  it('reuses bound readline for prompts instead of creating a second interface', async () => {
+    const gate = new PermissionGate();
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true });
+
+    const question = vi.fn((_prompt: string, cb: (answer: string) => void) => {
+      cb('y');
+    });
+    const mockRl = { question } as unknown as import('node:readline').Interface;
+    gate.bindReadline(mockRl);
+
+    const approved = await gate.requestApproval('run_terminal', 'echo hi');
+    expect(approved).toBe(true);
+    expect(question).toHaveBeenCalledOnce();
+    expect(String(question.mock.calls[0]?.[0])).toContain('run_terminal');
+    expect(String(question.mock.calls[0]?.[0])).toContain('echo hi');
+
+    gate.unbindReadline();
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, writable: true });
+  });
+
+  it('grants session trust when user answers "a"', async () => {
+    const gate = new PermissionGate();
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true });
+
+    const mockRl = {
+      question: (_prompt: string, cb: (answer: string) => void) => cb('a'),
+    } as unknown as import('node:readline').Interface;
+    gate.bindReadline(mockRl);
+
+    const approved = await gate.requestApproval('run_terminal', 'pnpm test');
+    expect(approved).toBe(true);
+    expect(gate.hasSessionTrust()).toBe(true);
+
+    gate.unbindReadline();
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, writable: true });
+  });
+});

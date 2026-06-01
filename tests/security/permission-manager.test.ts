@@ -1,19 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PermissionManager } from '../../src/security/permission-manager.js';
 
-// Mock prompts so tests never wait for interactive input
-vi.mock('prompts', () => {
-  const fn = vi.fn();
-  (fn as unknown as { override: ReturnType<typeof vi.fn> }).override = vi.fn();
-  return { default: fn };
-});
+vi.mock('../../src/runtime/permission-gate.js', () => ({
+  permissionGate: {
+    hasSessionTrust: vi.fn().mockReturnValue(false),
+    requestApproval: vi.fn().mockResolvedValue(true),
+  },
+}));
 
-// Mock fs to control the permissions file
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
 }));
+
+import { permissionGate } from '../../src/runtime/permission-gate.js';
 
 // ── Risk classification ───────────────────────────────────────────────────────
 
@@ -85,10 +86,9 @@ describe('PermissionManager.check — safe commands', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('allows safe commands without prompting', async () => {
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
     const result = await PermissionManager.check('git status');
     expect(result).toBe(true);
-    expect(prompts).not.toHaveBeenCalled();
+    expect(permissionGate.requestApproval).not.toHaveBeenCalled();
   });
 });
 
@@ -105,10 +105,25 @@ describe('PermissionManager.check — bypass via env var', () => {
   });
 
   it('skips prompt when KODA_SKIP_PERMISSIONS=true', async () => {
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
     const result = await PermissionManager.check('rm -rf dist/');
     expect(result).toBe(true);
-    expect(prompts).not.toHaveBeenCalled();
+    expect(permissionGate.requestApproval).not.toHaveBeenCalled();
+  });
+});
+
+// ── check() — session trust ───────────────────────────────────────────────────
+
+describe('PermissionManager.check — session trust', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.KODA_SKIP_PERMISSIONS;
+  });
+
+  it('skips prompt when permissionGate session trust is active', async () => {
+    vi.mocked(permissionGate.hasSessionTrust).mockReturnValueOnce(true);
+    const result = await PermissionManager.check('npm test');
+    expect(result).toBe(true);
+    expect(permissionGate.requestApproval).not.toHaveBeenCalled();
   });
 });
 
@@ -118,42 +133,23 @@ describe('PermissionManager.check — prompt flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.KODA_SKIP_PERMISSIONS;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true });
   });
 
-  it('returns true when user selects Yes', async () => {
+  it('returns true when permissionGate approves', async () => {
     const { readFile } = await import('node:fs/promises');
     vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'));
-
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-    prompts.mockResolvedValueOnce({ choice: 'yes' });
-
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.mocked(permissionGate.requestApproval).mockResolvedValueOnce(true);
 
     const result = await PermissionManager.check('npm test');
     expect(result).toBe(true);
+    expect(permissionGate.requestApproval).toHaveBeenCalledWith('run_terminal', 'npm test');
   });
 
-  it('returns false when user selects No', async () => {
+  it('returns false when permissionGate denies', async () => {
     const { readFile } = await import('node:fs/promises');
     vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'));
-
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-    prompts.mockResolvedValueOnce({ choice: 'no' });
-
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    const result = await PermissionManager.check('npm test');
-    expect(result).toBe(false);
-  });
-
-  it('returns false when prompt is cancelled (undefined choice)', async () => {
-    const { readFile } = await import('node:fs/promises');
-    vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'));
-
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-    prompts.mockResolvedValueOnce({ choice: undefined });
-
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.mocked(permissionGate.requestApproval).mockResolvedValueOnce(false);
 
     const result = await PermissionManager.check('npm test');
     expect(result).toBe(false);
@@ -166,18 +162,18 @@ describe('PermissionManager.check — remember approval', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.KODA_SKIP_PERMISSIONS;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, writable: true });
   });
 
-  it('persists command when user selects Yes remember', async () => {
+  it('persists command when session trust is granted during approval', async () => {
     const { readFile, writeFile, mkdir } = await import('node:fs/promises');
     vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'));
     vi.mocked(mkdir).mockResolvedValue(undefined);
     vi.mocked(writeFile).mockResolvedValue(undefined);
-
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-    prompts.mockResolvedValueOnce({ choice: 'remember' });
-
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.mocked(permissionGate.requestApproval).mockResolvedValueOnce(true);
+    vi.mocked(permissionGate.hasSessionTrust)
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
 
     const result = await PermissionManager.check('pnpm build');
     expect(result).toBe(true);
@@ -194,11 +190,9 @@ describe('PermissionManager.check — remember approval', () => {
       JSON.stringify({ approvedCommands: ['pnpm build'] }) as unknown as Buffer,
     );
 
-    const prompts = (await import('prompts')).default as ReturnType<typeof vi.fn>;
-
     const result = await PermissionManager.check('pnpm build');
     expect(result).toBe(true);
-    expect(prompts).not.toHaveBeenCalled();
+    expect(permissionGate.requestApproval).not.toHaveBeenCalled();
   });
 });
 
@@ -249,7 +243,6 @@ describe('PermissionManager persistence', () => {
 
     await PermissionManager.persistApproval('npm test');
 
-    // No write needed — command was already present
     expect(writeFile).not.toHaveBeenCalled();
   });
 });

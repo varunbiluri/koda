@@ -506,6 +506,8 @@ export class ReasoningEngine {
     // Minimum is 20 so medium/large features complete without truncation.
     const MAX_ROUNDS = chatOptions?.maxRounds ?? 20;
     const toolUsage: Record<string, number> = {};
+    /** Warn once per chat() — not after every tool round. */
+    let budgetWarnShown = false;
     // Loop detection: map of toolName → last 3 result strings (circular buffer)
     const toolResultHistory: Map<string, string[]> = new Map();
 
@@ -535,8 +537,7 @@ export class ReasoningEngine {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       // ── AbortSignal: cancel gracefully between rounds ──────────────────────
       if (signal?.aborted) {
-        onChunk('');
-        return buildMetrics(Math.floor((Date.now() - startTime) / 1000));
+        throw new DOMException('The operation was aborted', 'AbortError');
       }
 
       onStage?.('INFO thinking');
@@ -575,14 +576,16 @@ export class ReasoningEngine {
         totalTokens += (response.usage.prompt_tokens ?? 0) + (response.usage.completion_tokens ?? 0);
       }
 
-      // ── Surface budget warning via onStage when approaching limits ──────────
-      const remaining = agentBudgetManager.getRemainingBudget('reasoning-engine');
+      // ── Surface budget warning once when approaching limits ────────────────
       const budget = agentBudgetManager.getAgentBudget('reasoning-engine');
-      if (budget && budget.maxTokens > 0) {
+      if (budget && budget.maxTokens > 0 && !budgetWarnShown) {
         const usedPct = (budget.currentTokens / budget.maxTokens) * 100;
         if (usedPct > 80) {
+          budgetWarnShown = true;
           onStage?.(`WARN Token budget ${Math.round(usedPct)}% used — responses may shorten`);
-          logger.debug(`[reasoning-engine] Budget: ${usedPct.toFixed(1)}% used (${remaining.remainingTokens} remaining)`);
+          logger.debug(
+            `[reasoning-engine] Budget: ${usedPct.toFixed(1)}% used (${agentBudgetManager.getRemainingBudget('reasoning-engine').remainingTokens} remaining)`,
+          );
         }
       }
 
@@ -682,7 +685,7 @@ export class ReasoningEngine {
           if (hist.length > 3) hist.shift();
           toolResultHistory.set(toolName, hist);
           if (hist.length === 3 && hist[0] === hist[1] && hist[1] === hist[2]) {
-            logger.warn(`[reasoning-engine] Loop detected: ${toolName} returned identical result 3 times`);
+            logger.debug(`[reasoning-engine] Loop detected: ${toolName} returned identical result 3 times`);
             return {
               role:        'tool',
               content:     `Tool ${toolName} returned the same result 3 consecutive times — possible loop detected. Summarise what you have found so far and proceed with the task.`,
@@ -694,7 +697,7 @@ export class ReasoningEngine {
           // repeatedly without progress. Execution always continues.
           const callCount = toolUsage[toolName];
           if (callCount >= 5) {
-            logger.warn(`[reasoning-engine] Tool repetition: ${toolName} called ${callCount} times — injecting guidance hint`);
+            logger.debug(`[reasoning-engine] Tool repetition: ${toolName} called ${callCount} times — injecting guidance hint`);
           }
           const repetitionHint = callCount >= 5
             ? ` [Hint: ${toolName} has been called ${callCount} times. If you are repeating the same operation without making progress, try a different approach.]`

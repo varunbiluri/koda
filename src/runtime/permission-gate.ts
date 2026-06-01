@@ -93,6 +93,10 @@ const ALLOW_PATTERNS: RegExp[] = [
 export class PermissionGate {
   /** Bypass confirmation for the current session (set via /trust or --yes flag). */
   private sessionTrust = false;
+  /** Pause live activity UI before blocking on stdin (spinner + readline conflict). */
+  private beforePrompt: (() => void) | null = null;
+  /** Shared REPL readline — must be set by SessionManager to avoid duplicate stdin listeners. */
+  private sessionRl: readline.Interface | null = null;
 
   /**
    * Classify an operation.
@@ -173,12 +177,31 @@ export class PermissionGate {
    */
   grantSessionTrust(): void {
     this.sessionTrust = true;
-    logger.info('[permission-gate] Session trust granted — all ASK operations auto-approved');
+    logger.debug('[permission-gate] Session trust granted — all ASK operations auto-approved');
   }
 
   /** Returns true if session trust is currently active. */
   hasSessionTrust(): boolean {
     return this.sessionTrust;
+  }
+
+  /**
+   * Bind the interactive REPL readline instance.
+   * Permission prompts reuse this interface so answers are not duplicated as user messages.
+   */
+  bindReadline(rl: readline.Interface): void {
+    this.sessionRl = rl;
+  }
+
+  /** Stop spinners/activity lines before permission prompts (SessionManager). */
+  bindBeforePrompt(fn: () => void): void {
+    this.beforePrompt = fn;
+  }
+
+  /** Clear REPL binding when the session ends. */
+  unbindReadline(): void {
+    this.sessionRl = null;
+    this.beforePrompt = null;
   }
 
   /**
@@ -209,52 +232,65 @@ export class PermissionGate {
       return false;
     }
 
-    return new Promise<boolean>((resolve) => {
-      const rl = readline.createInterface({
-        input:  process.stdin,
-        output: process.stdout,
-      });
-
-      rl.question(
-        `\n  [Koda] ${operation} — apply this change? [Y/n/e] `,
-        async (answer) => {
-          rl.close();
-          const a = answer.trim().toLowerCase();
-          if (a === 'e' || a === 'edit') {
-            await onEdit?.();
-            resolve(true);
-          } else {
-            const approved = a === '' || a === 'y' || a === 'yes';
-            logger.debug(
-              `[permission-gate] User ${approved ? 'approved' : 'denied'}: "${operation}"`,
-            );
-            resolve(approved);
-          }
-        },
-      );
-    });
+    const answer = await this._askQuestion(this._formatDiffPrompt(operation));
+    const a = answer.trim().toLowerCase();
+    if (a === 'e' || a === 'edit') {
+      await onEdit?.();
+      return true;
+    }
+    const approved = a === '' || a === 'y' || a === 'yes';
+    logger.debug(
+      `[permission-gate] User ${approved ? 'approved' : 'denied'}: "${operation}"`,
+    );
+    return approved;
   }
 
   // ── Private ────────────────────────────────────────────────────────────────
 
-  private _prompt(operation: string, detail?: string): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+  private async _prompt(operation: string, detail?: string): Promise<boolean> {
+    const answer = await this._askQuestion(this._formatPrompt(operation, detail));
+    return this._parseApproval(answer, operation);
+  }
+
+  private _formatPrompt(operation: string, detail?: string): string {
+    const lines = ['', '  PERM   ' + operation];
+    if (detail) lines.push('         ' + detail);
+    lines.push('  Proceed? [Y/n/a=all] ');
+    return lines.join('\n');
+  }
+
+  private _formatDiffPrompt(operation: string): string {
+    return `\n  PERM   ${operation} — apply this change? [Y/n/e] `;
+  }
+
+  private _parseApproval(answer: string, operation: string): boolean {
+    const trimmed = answer.trim().toLowerCase();
+    if (trimmed === 'a' || trimmed === 'all' || trimmed === 'always') {
+      this.grantSessionTrust();
+      logger.debug(`[permission-gate] User approved all (session trust): "${operation}"`);
+      return true;
+    }
+    const approved = trimmed === '' || trimmed === 'y' || trimmed === 'yes';
+    logger.debug(`[permission-gate] User ${approved ? 'approved' : 'denied'}: "${operation}"`);
+    return approved;
+  }
+
+  /** Reuse session readline when bound; fallback for one-off CLI prompts. */
+  private _askQuestion(prompt: string): Promise<string> {
+    this.beforePrompt?.();
+    return new Promise<string>((resolve) => {
+      if (this.sessionRl) {
+        this.sessionRl.question(prompt, resolve);
+        return;
+      }
       const rl = readline.createInterface({
         input:  process.stdin,
         output: process.stdout,
       });
-
-      const detailStr = detail ? `\n  ${detail}` : '';
-      rl.question(
-        `\n  [Koda] Allow operation: ${operation}${detailStr}\n  Proceed? [Y/n] `,
-        (answer) => {
-          rl.close();
-          const trimmed = answer.trim().toLowerCase();
-          const approved = trimmed === '' || trimmed === 'y' || trimmed === 'yes';
-          logger.debug(`[permission-gate] User ${approved ? 'approved' : 'denied'}: "${operation}"`);
-          resolve(approved);
-        },
-      );
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
     });
   }
 }

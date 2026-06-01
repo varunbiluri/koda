@@ -507,14 +507,14 @@ export class ToolRegistry {
 
     // ── Permission gate: every tool call must pass through the gate ───────────
     const decision = permissionGate.check(name);
-    logger.info(`[tool-registry] PERMISSION tool=${name} decision=${decision}`);
+    logger.debug(`[tool-registry] PERMISSION tool=${name} decision=${decision}`);
 
     if (decision === PermissionLevel.DENY) {
       return done(`Error: Tool "${name}" is blocked by security policy (DENY)`);
     }
 
-    if (decision === PermissionLevel.ASK && !WRITE_TOOLS.has(name)) {
-      // Non-write ASK tools (run_terminal) — standard gate
+    // run_terminal approval happens inside its case (needs the command string).
+    if (decision === PermissionLevel.ASK && !WRITE_TOOLS.has(name) && name !== 'run_terminal') {
       const approved = await permissionGate.requestApproval(name);
       if (!approved) {
         return done(`Error: Tool "${name}" was not approved — operation cancelled`);
@@ -596,6 +596,12 @@ export class ToolRegistry {
 
       case 'run_terminal': {
         const command = String(args['command'] ?? '');
+        if (permissionGate.check(name) === PermissionLevel.ASK) {
+          const approved = await permissionGate.requestApproval(name, command);
+          if (!approved) {
+            return done(`Error: Tool "${name}" was not approved — operation cancelled`);
+          }
+        }
         onStage?.(`RUN ${command}`);
         const result = await this.sandbox.execute(command, { signal });
         if (result.exitCode !== 0) {

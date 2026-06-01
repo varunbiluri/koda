@@ -99,4 +99,25 @@ describe('WorktreeManager', () => {
     const wm = new WorktreeManager('/repo');
     await expect(wm.createWorktree('fail-task')).rejects.toThrow('Failed to create worktree');
   });
+
+  it('listGitWorktrees() parses porcelain output', async () => {
+    runMock.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: [
+        'worktree /repo',
+        'HEAD abc123',
+        'branch refs/heads/main',
+        '',
+        'worktree /repo/.koda/worktrees/session',
+        'HEAD def456',
+        'branch refs/heads/feature/koda-1',
+        '',
+      ].join('\n'),
+      stderr: '',
+    });
+    const wm = new WorktreeManager('/repo');
+    const list = await wm.listGitWorktrees();
+    expect(list).toHaveLength(2);
+    expect(list[1]?.branch).toBe('feature/koda-1');
+  });
 });
