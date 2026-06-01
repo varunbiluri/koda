@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import type { UIRenderer } from '../ui-renderer.js';
 import { configExists, loadConfig } from '../../../ai/config-store.js';
 import { createProvider } from '../../../ai/providers/provider-factory.js';
-import { gitCommit } from '../../../tools/git-tools.js';
+import { buildKodaCommitMessage, gitCommit, KODA_CO_AUTHOR_TRAILER } from '../../../tools/git-tools.js';
 import { permissionGate } from '../../../runtime/permission-gate.js';
 
 const MAX_DIFF_CHARS = 12_000;
@@ -83,8 +83,9 @@ export async function generateCommitMessage(stagedDiff: string): Promise<string>
 
 /**
  * Run the /commit flow: staged diff → proposed message → approval → git commit.
+ * @returns true when a commit was created
  */
-export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
+export async function runSlashCommit(opts: SlashCommitOptions): Promise<boolean> {
   const { rootPath, ui, userMessage } = opts;
 
   let stagedDiff: string;
@@ -96,7 +97,7 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
   } catch {
     ui.renderError('Git not available in this directory.');
     console.log();
-    return;
+    return false;
   }
 
   if (!stagedDiff) {
@@ -110,7 +111,7 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
     if (!unstaged) {
       ui.renderInfo('Nothing to commit — working tree clean.');
       console.log();
-      return;
+      return false;
     }
 
     const fileCount = unstaged.split('\n').filter(Boolean).length;
@@ -127,7 +128,7 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
     if (!stageOk) {
       ui.renderInfo('Commit cancelled.');
       console.log();
-      return;
+      return false;
     }
 
     try {
@@ -137,13 +138,13 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
     } catch (err) {
       ui.renderError(`Could not stage changes: ${(err as Error).message}`);
       console.log();
-      return;
+      return false;
     }
 
     if (!stagedDiff) {
       ui.renderError('Nothing staged after git add -A.');
       console.log();
-      return;
+      return false;
     }
   }
 
@@ -162,7 +163,7 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
       ui.stopSpinner(false, 'Could not generate commit message');
       ui.renderError((err as Error).message, 'Run /login or pass a message: /commit your message here');
       console.log();
-      return;
+      return false;
     }
   } else {
     ui.renderError(
@@ -170,14 +171,17 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
       'Run /login, or pass one: /commit your message here',
     );
     console.log();
-    return;
+    return false;
   }
+
+  const fullMessage = buildKodaCommitMessage(message);
 
   // Show proposal
   console.log();
   console.log(chalk.bold('  Proposed commit'));
   console.log();
   console.log(chalk.cyan(message.split('\n').map((l) => `  ${l}`).join('\n')));
+  console.log(chalk.gray(`  ${KODA_CO_AUTHOR_TRAILER}`));
   console.log();
   console.log(chalk.bold('  Staged files'));
   console.log(chalk.gray(nameStatus.split('\n').map((l) => `  ${l}`).join('\n')));
@@ -194,20 +198,20 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
 
   const approved = await permissionGate.requestApproval(
     'git_commit',
-    `Commit message:\n  ${message.split('\n').join('\n  ')}`,
+    `Commit message:\n  ${fullMessage.split('\n').join('\n  ')}`,
   );
 
   if (!approved) {
     ui.renderInfo('Commit cancelled.');
     console.log();
-    return;
+    return false;
   }
 
-  const result = await gitCommit(message, rootPath);
+  const result = await gitCommit(fullMessage, rootPath);
   if (!result.success) {
     ui.renderError(result.error ?? 'git commit failed');
     console.log();
-    return;
+    return false;
   }
 
   ui.renderSuccess('Committed successfully.');
@@ -215,4 +219,5 @@ export async function runSlashCommit(opts: SlashCommitOptions): Promise<void> {
     console.log(chalk.gray(`  ${result.data.trim().split('\n')[0]}`));
   }
   console.log();
+  return true;
 }

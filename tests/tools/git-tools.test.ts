@@ -16,6 +16,7 @@ import {
   gitDiff,
   gitLog,
   createKodaCommit,
+  buildKodaCommitMessage,
   KODA_CO_AUTHOR_TRAILER,
   KODA_AUTHOR,
 } from '../../src/tools/git-tools.js';
@@ -115,6 +116,17 @@ describe('gitCreatePr', () => {
     const cmd = mockRun.mock.calls[0][0] as string;
     expect(cmd).not.toContain('docs/');
     expect(cmd).toContain('--body-file');
+  });
+});
+
+// ── buildKodaCommitMessage ───────────────────────────────────────────────────
+
+describe('buildKodaCommitMessage', () => {
+  it('appends co-author trailer as the final line', () => {
+    const full = buildKodaCommitMessage('feat: add login');
+    expect(full).toContain('feat: add login');
+    expect(full).toContain('Generated with help from Koda AI.');
+    expect(full.trimEnd()).toMatch(/Co-authored-by: Koda AI <268287658\+koda-ai-engineer@users\.noreply\.github\.com>$/);
   });
 });
 

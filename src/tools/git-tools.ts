@@ -10,6 +10,11 @@ export const KODA_AUTHOR = 'Koda AI <268287658+koda-ai-engineer@users.noreply.gi
 export const KODA_CO_AUTHOR_TRAILER =
   'Co-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>';
 
+/** Append Koda co-author trailer (GitHub contributor graph). */
+export function buildKodaCommitMessage(message: string): string {
+  return `${message.trim()}\n\nGenerated with help from Koda AI.\n\n${KODA_CO_AUTHOR_TRAILER}`;
+}
+
 export async function gitDiff(rootPath: string): Promise<ToolResult<string>> {
   const result = await runTerminal('git diff', rootPath);
   if (result.success && result.data) {
@@ -96,8 +101,7 @@ export async function createKodaCommit(
   }
 
   // Build message with co-author trailer as the final line (GitHub requirement)
-  const fullMessage =
-    `${message}\n\nGenerated with help from Koda AI.\n\n${KODA_CO_AUTHOR_TRAILER}`;
+  const fullMessage = buildKodaCommitMessage(message);
 
   const escapedMessage = fullMessage.replace(/"/g, '\\"');
   const commitResult = await runTerminal(`git commit -m "${escapedMessage}"`, rootPath);

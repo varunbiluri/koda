@@ -12,7 +12,7 @@ import { configExists, loadConfig } from '../../../ai/config-store.js';
 import { createProvider } from '../../../ai/providers/provider-factory.js';
 import { gitPush } from '../../../tools/git-tools.js';
 import { permissionGate } from '../../../runtime/permission-gate.js';
-import { truncateDiff, sanitizeCommitMessage } from './commit-handler.js';
+import { truncateDiff, sanitizeCommitMessage, runSlashCommit } from './commit-handler.js';
 
 const PR_REQUEST_PATTERNS: RegExp[] = [
   /\b(create|open|make|submit|start|crate|need\s+to)\s+(a\s+)?(pull\s+request|pr)\b/i,
@@ -327,30 +327,32 @@ export async function runSlashPr(opts: SlashPrOptions): Promise<string | null> {
     return null;
   }
 
-  const ahead = countCommitsAhead(rootPath, compareRef);
+  let ahead = countCommitsAhead(rootPath, compareRef);
 
-  if (ahead === 0) {
+  if (ahead === 0 && hasUncommittedChanges(rootPath)) {
+    ui.renderInfo('Uncommitted changes found — committing before opening PR…');
+    console.log();
+    const committed = await runSlashCommit({ rootPath, ui });
+    if (!committed) {
+      ui.renderInfo('PR cancelled — commit was not completed.');
+      console.log();
+      return null;
+    }
+    refreshRemoteBase(rootPath, baseBranch);
+    ahead = countCommitsAhead(rootPath, compareRef);
+    if (ahead === 0) {
+      ui.renderInfo(`No commits ahead of ${baseBranch} after commit.`);
+      console.log();
+      return null;
+    }
+  } else if (ahead === 0) {
     if (isMergedIntoRemoteBase(rootPath, compareRef)) {
-      if (hasUncommittedChanges(rootPath)) {
-        ui.renderInfo(
-          `Branch ${branch} has no new commits vs ${baseBranch}, but you have uncommitted changes. ` +
-          'Run /commit to stage and commit them, then run /pr again.',
-        );
-      } else {
-        ui.renderInfo(
-          `No new commits — ${branch} is already on ${baseBranch}. ` +
-          'These changes look merged already.',
-        );
-      }
+      ui.renderInfo(
+        `No new commits — ${branch} is already on ${baseBranch}. ` +
+        'These changes look merged already.',
+      );
     } else {
-      if (hasUncommittedChanges(rootPath)) {
-        ui.renderInfo(
-          `No commits on ${branch} yet, but you have uncommitted changes. ` +
-          'Run /commit to stage and commit them, then run /pr again.',
-        );
-      } else {
-        ui.renderInfo(`No commits ahead of ${baseBranch}. Commit changes first (/commit).`);
-      }
+      ui.renderInfo(`No commits ahead of ${baseBranch}. Commit changes first (/commit).`);
     }
     console.log();
     return null;

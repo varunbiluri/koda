@@ -27,6 +27,10 @@ vi.mock('../../../src/tools/git-tools.js', () => ({
     success: true,
     data:    '[main abc1234] fix(auth): invalidate reset token',
   }),
+  KODA_CO_AUTHOR_TRAILER:
+    'Co-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>',
+  buildKodaCommitMessage: (message: string) =>
+    `${message.trim()}\n\nGenerated with help from Koda AI.\n\nCo-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>`,
 }));
 
 vi.mock('../../../src/runtime/permission-gate.js', () => ({
@@ -44,6 +48,7 @@ import {
   generateCommitMessage,
   runSlashCommit,
 } from '../../../src/cli/session/slash/commit-handler.js';
+import { buildKodaCommitMessage, KODA_CO_AUTHOR_TRAILER } from '../../../src/tools/git-tools.js';
 
 describe('sanitizeCommitMessage', () => {
   it('strips markdown fences', () => {
@@ -155,7 +160,11 @@ describe('runSlashCommit', () => {
       expect.stringContaining('fix(auth)'),
     );
     expect(gitCommit).toHaveBeenCalledWith(
-      'fix(auth): invalidate reset token after use',
+      expect.stringContaining('fix(auth): invalidate reset token after use'),
+      '/repo',
+    );
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining(KODA_CO_AUTHOR_TRAILER),
       '/repo',
     );
     expect(ui.renderSuccess).toHaveBeenCalled();
@@ -177,7 +186,14 @@ describe('runSlashCommit', () => {
     });
 
     expect(mockSend).not.toHaveBeenCalled();
-    expect(gitCommit).toHaveBeenCalledWith('chore: manual message', '/repo');
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining('chore: manual message'),
+      '/repo',
+    );
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining(KODA_CO_AUTHOR_TRAILER),
+      '/repo',
+    );
   });
 
   it('cancels when user denies approval', async () => {
