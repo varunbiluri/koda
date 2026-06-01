@@ -3,6 +3,12 @@ import * as fs   from 'node:fs/promises';
 import { CommandExecutor } from './command-executor.js';
 import { logger } from '../utils/logger.js';
 
+export interface GitWorktreeEntry {
+  path:   string;
+  branch: string;
+  head:   string;
+}
+
 // ── WorktreeManager ───────────────────────────────────────────────────────────
 
 /**
@@ -63,6 +69,20 @@ export class WorktreeManager {
     this.worktrees.set(taskName, { worktreePath: worktreeDir, branchName });
     logger.debug(`[worktree] Created worktree for "${taskName}" → ${worktreeDir}`);
     return worktreeDir;
+  }
+
+  /** Register an existing worktree (session restore). */
+  adopt(taskName: string, worktreePath: string, branchName: string): void {
+    this.worktrees.set(taskName, { worktreePath, branchName });
+  }
+
+  /** Parse `git worktree list --porcelain`. */
+  async listGitWorktrees(): Promise<GitWorktreeEntry[]> {
+    const result = await this.executor.run('git worktree list --porcelain');
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || 'git worktree list failed');
+    }
+    return parseWorktreePorcelain(result.stdout);
   }
 
   /**
@@ -156,4 +176,62 @@ export class WorktreeManager {
   getManagedTasks(): string[] {
     return Array.from(this.worktrees.keys());
   }
+
+  /** List extra worktrees matching path markers (never includes main checkout). */
+  async listRemovableWorktrees(pathMarkers: string[]): Promise<Array<{ path: string; branch: string }>> {
+    const entries = await this.listGitWorktrees();
+    const mainPath = path.resolve(this.rootPath);
+    const normMarkers = pathMarkers.map((m) => m.replace(/\//g, path.sep));
+
+    return entries
+      .filter((e) => {
+        const resolved = path.resolve(e.path);
+        if (resolved === mainPath) return false;
+        return normMarkers.some((m) => resolved.includes(m));
+      })
+      .map((e) => ({ path: e.path, branch: e.branch }));
+  }
+
+  /** Remove worktrees by path; deletes feature/koda-* branches when present. */
+  async removeWorktreesAt(targets: Array<{ path: string; branch: string }>): Promise<string[]> {
+    const removed: string[] = [];
+    for (const t of targets) {
+      try {
+        const result = await this.executor.run(`git worktree remove --force "${t.path}"`);
+        if (result.exitCode !== 0) continue;
+
+        if (/^feature\/koda-/.test(t.branch)) {
+          await this.executor.run(`git branch -D "${t.branch}"`).catch(() => undefined);
+        }
+
+        for (const [task, entry] of this.worktrees) {
+          if (path.resolve(entry.worktreePath) === path.resolve(t.path)) {
+            this.worktrees.delete(task);
+          }
+        }
+        removed.push(t.path);
+      } catch {
+        // skip failed entries
+      }
+    }
+    return removed;
+  }
+}
+
+function parseWorktreePorcelain(stdout: string): GitWorktreeEntry[] {
+  const entries: GitWorktreeEntry[] = [];
+  let current: Partial<GitWorktreeEntry> = {};
+
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      if (current.path) entries.push(current as GitWorktreeEntry);
+      current = { path: line.slice(9).trim(), branch: '', head: '' };
+    } else if (line.startsWith('branch ') && current.path) {
+      current.branch = line.slice(7).trim().replace(/^refs\/heads\//, '');
+    } else if (line.startsWith('HEAD ') && current.path) {
+      current.head = line.slice(5).trim();
+    }
+  }
+  if (current.path) entries.push(current as GitWorktreeEntry);
+  return entries;
 }

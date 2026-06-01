@@ -121,7 +121,7 @@ async function setupAzure(ui: SetupWizardUI): Promise<boolean> {
       return false;
     }
 
-    const deployments = AzureAIProvider.filterChatCompatible(allDeployments);
+    const deployments = AzureAIProvider.filterChatCompatible(allDeployments, cleanEndpoint);
     if (deployments.length === 0) {
       console.log();
       console.log(`  ${chalk.red('✖')}  No compatible chat models found.`);

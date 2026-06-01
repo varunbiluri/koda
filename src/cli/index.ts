@@ -31,6 +31,7 @@ import { createFeedbackCommand } from './commands/feedback.js';
 import { createUpdateCommand } from './commands/update.js';
 import { createChatCommand } from './commands/chat.js';
 import { createMcpCommand } from './commands/mcp.js';
+import { createServeCommand } from './commands/serve.js';
 
 export function createProgram(): Command {
   const program = new Command('koda')
@@ -76,6 +77,7 @@ export function createProgram(): Command {
 
   // Phase 7: Developer Platform & IDE Integration
   program.addCommand(createStartLspCommand());
+  program.addCommand(createServeCommand());
   program.addCommand(createWatchCommand());
   program.addCommand(createExplainCommand());
   program.addCommand(createImproveCommand());

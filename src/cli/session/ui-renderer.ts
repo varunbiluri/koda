@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import type { FilePatch } from '../../patch/types.js';
@@ -6,7 +7,7 @@ import { mergeChatMetrics, emptyChatMetrics } from '../../product/task-telemetry
 import type { ExecutionPlan, PlanStep } from '../../ai/reasoning/planning-engine.js';
 import type { ExecutionMetrics } from '../../execution/plan-executor.js';
 import { VERSION } from '../../constants.js';
-import { SLASH_CATEGORY_LABELS, getCommandsByCategory, type SlashCommandCategory } from './slash/registry.js';
+import { SLASH_CATEGORY_LABELS, getCommandsByCategory, type SlashCommandCategory, type SlashCommandDef } from './slash/registry.js';
 
 // ── Simple line-diff utility (no external dependency) ─────────────────────────
 
@@ -83,6 +84,53 @@ export interface HeaderContext {
   branch: string;
   indexStatus: 'ready' | 'missing' | 'stale';
   model: string;
+  rootPath?: string;
+  mcpIssues?: string[];
+  recentActivity?: string[];
+  worktree?: {
+    taskName: string;
+    worktreePath: string;
+    branchName: string;
+  };
+}
+
+const DASHBOARD_WIDTH = 70;
+const DASH_LEFT = 31;
+
+function truncateVis(s: string, max: number): string {
+  if (visLen(s) <= max) return s;
+  const plain = s.replace(/\x1b\[[0-9;]*m/g, '');
+  return plain.slice(0, max - 1) + '…';
+}
+
+function dashboardTop(title: string): string {
+  const inner = DASHBOARD_WIDTH - 2;
+  const side = Math.max(0, Math.floor((inner - title.length) / 2));
+  const right = Math.max(0, inner - title.length - side);
+  return '╭' + '─'.repeat(side) + title + '─'.repeat(right) + '╮';
+}
+
+function dashboardBottom(): string {
+  return '╰' + '─'.repeat(DASHBOARD_WIDTH - 2) + '╯';
+}
+
+function shortenPath(p: string): string {
+  const home = os.homedir();
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
+function visLen(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+function padRight(s: string, width: number): string {
+  const pad = Math.max(0, width - visLen(s));
+  return s + ' '.repeat(pad);
+}
+
+function dashboardRow(left: string, right: string): string {
+  const border = chalk.cyan('│');
+  return `${border} ${padRight(left, DASH_LEFT)}${border} ${padRight(right, DASHBOARD_WIDTH - DASH_LEFT - 5)} ${border}`;
 }
 
 export interface ProgressStage {
@@ -134,6 +182,7 @@ function parseStage(raw: string): { label: string; detail: string } {
   if (raw.startsWith('COMMIT '))     return { label: L.COMMIT,     detail: raw.slice(7) };
   if (raw.startsWith('WARN '))       return { label: L.WARN,       detail: raw.slice(5) };
   if (raw.startsWith('INFO '))       return { label: L.INFO,       detail: raw.slice(5) };
+  if (raw.startsWith('PLAN '))       return { label: L.PLAN,       detail: raw.slice(5) };
   if (raw.startsWith('WORKTREE '))   return { label: L.WORKTREE,   detail: raw.slice(9) };
   if (raw.startsWith('PERMISSION ')) return { label: L.PERMISSION, detail: raw.slice(11) };
   if (raw.startsWith('AGENT '))      return { label: L.AGENT,      detail: raw.slice(6) };
@@ -144,6 +193,31 @@ function parseStage(raw: string): { label: string; detail: string } {
   // Strip leading non-ASCII/symbol prefix (emoji) without u-flag for Node 18 compat
   const stripped = raw.replace(/^[^a-zA-Z0-9([\-]+/, '').trim();
   return { label: L.INFO, detail: stripped || raw };
+}
+
+/** Hide noisy tool traces unless /verbose is on. */
+function isQuietStage(raw: string): boolean {
+  if (raw.startsWith('READ '))       return true;
+  if (raw.startsWith('SEARCH '))     return true;
+  if (raw.startsWith('WRITE '))      return true;
+  if (raw.startsWith('RUN '))        return true;
+  if (raw.startsWith('GIT '))        return true;
+  if (raw.startsWith('FETCH '))      return true;
+  if (raw.startsWith('COMMIT '))     return true;
+  if (raw.startsWith('AGENT '))      return true;
+  if (raw.startsWith('INFO thinking')) return true;
+  if (raw.startsWith('INFO generating')) return true;
+  if (raw.startsWith('INFO CACHE'))  return true;
+  if (raw.startsWith('INFO DISK'))   return true;
+  if (raw.startsWith('INFO CACHE_HIT')) return true;
+  if (raw.startsWith('INFO DISK_CACHE')) return true;
+  if (raw.startsWith('INFO ROUTER:')) return true;
+  if (raw.startsWith('INFO Step ')) return true;
+  if (raw.startsWith('PLAN '))      return true;
+  if (raw.startsWith('WORKTREE '))  return true;
+  if (raw.startsWith('INFO Verification')) return true;
+  if (raw.startsWith('WARN Token budget')) return true;
+  return false;
 }
 
 // ── PlanTracker ───────────────────────────────────────────────────────────────
@@ -330,6 +404,10 @@ export class UIRenderer {
   private _tokensUsed = 0;
   private _sessionMetrics: ChatMetrics = emptyChatMetrics();
   private _timeline: Array<{ name: string; durationMs: number }> = [];
+  private _slashMenuLines = 0;
+  private _planStepIndex = 0;
+  /** When false, hide per-tool READ/SEARCH/INFO noise (default REPL). */
+  private _streamVerbose = false;
 
   readonly planTracker  = new PlanTracker();
   readonly dagVisualizer = new DagVisualizer();
@@ -338,6 +416,10 @@ export class UIRenderer {
   updateContext(files: string[], tokens: number): void {
     this._contextFiles = files;
     this._contextTokens = tokens;
+  }
+
+  getContextSnapshot(): { files: string[]; tokens: number } {
+    return { files: [...this._contextFiles], tokens: this._contextTokens };
   }
 
   recordToolUsed(name: string): void {
@@ -361,6 +443,15 @@ export class UIRenderer {
     return this._sessionMetrics;
   }
 
+  /** Toggle detailed tool-stage lines (READ, SEARCH, thinking, …). */
+  setStreamVerbose(verbose: boolean): void {
+    this._streamVerbose = verbose;
+  }
+
+  isStreamVerbose(): boolean {
+    return this._streamVerbose;
+  }
+
   setTimeline(entries: Array<{ name: string; durationMs: number }>): void {
     this._timeline = entries;
   }
@@ -372,6 +463,7 @@ export class UIRenderer {
     this._contextTokens = 0;
     this._toolUsage = {};
     this._planSteps = [];
+    this._planStepIndex = 0;
     this._tokensUsed = 0;
     this._sessionMetrics = emptyChatMetrics();
     this._timeline = [];
@@ -382,30 +474,190 @@ export class UIRenderer {
   // ── Header ────────────────────────────────────────────────────────────────
 
   renderHeader(ctx: HeaderContext): void {
+    const border  = chalk.cyan;
+    const user    = os.userInfo().username;
+    const cwd     = truncateVis(shortenPath(ctx.rootPath ?? process.cwd()), 28);
+    const branch  = truncateVis(ctx.branch, 18);
+    const index   = formatIndexStatus(ctx.indexStatus);
+    const tips = ctx.indexStatus === 'missing'
+      ? ['Run /init to index this repo', 'Type /help for all commands', 'Try "explain README.md"']
+      : ['Type /help for all commands', 'Use /trust to skip approvals', 'Try "fix lint errors"'];
+
+    const activity = (ctx.recentActivity ?? [])
+      .filter((a) => a.length > 2)
+      .slice(0, 3);
+    const activityLines = activity.length > 0
+      ? activity.map((a) => chalk.gray(truncateVis(a, 32)))
+      : [chalk.gray('No recent activity')];
+
     console.log();
-    console.log(chalk.bold.cyan('  Koda') + chalk.gray(` v${VERSION}`));
-    console.log(chalk.gray('  Agentic coding in your terminal — free & open source'));
+    console.log(border(dashboardTop(` Koda v${VERSION} `)));
+    console.log(dashboardRow('', ''));
+    console.log(dashboardRow(
+      chalk.white(`Welcome back ${user}!`),
+      chalk.bold('Tips for getting started'),
+    ));
+    console.log(dashboardRow(
+      chalk.gray(`${ctx.model} · ${index}`),
+      chalk.gray(tips[0] ?? ''),
+    ));
+    console.log(dashboardRow(
+      chalk.gray(`${cwd} (${branch})`),
+      chalk.gray(tips[1] ?? ''),
+    ));
+    if (ctx.worktree) {
+      console.log(dashboardRow(
+        chalk.magenta(`WKTREE ${truncateVis(ctx.worktree.branchName, 22)}`),
+        chalk.gray('/worktree merge · discard'),
+      ));
+    }
+    console.log(dashboardRow('', chalk.gray(tips[2] ?? '')));
+    console.log(dashboardRow('', ''));
+    console.log(dashboardRow('', chalk.bold('Recent activity')));
+    for (let i = 0; i < 3; i++) {
+      console.log(dashboardRow('', activityLines[i] ?? ''));
+    }
+    console.log(dashboardRow('', ''));
+    console.log(border(dashboardBottom()));
+
+    if (ctx.mcpIssues && ctx.mcpIssues.length > 0) {
+      for (const issue of ctx.mcpIssues) {
+        console.log(chalk.yellow(`  ⚠ MCP ${issue}`));
+      }
+      console.log(chalk.gray('  Fix with /mcp remove <name> or edit ~/.koda/mcp.json'));
+    }
+
     console.log();
+  }
+
+  renderWorktreeHelp(active: HeaderContext['worktree'] | null | undefined): void {
+    console.log();
+    console.log('  ' + chalk.bold('Worktree commands'));
+    console.log();
+    if (active) {
+      console.log(`  ${L.WORKTREE}${chalk.white('active')} ${chalk.gray(shortenPath(active.worktreePath))}`);
+      console.log(`         ${chalk.gray('branch')} ${active.branchName}`);
+      console.log();
+    } else {
+      console.log(`  ${chalk.gray('No active worktree — agents run in the main tree.')}`);
+      console.log();
+    }
+    const rows: [string, string][] = [
+      ['/worktree enter [name]', 'Create isolated branch + worktree (default: session)'],
+      ['/worktree merge',          'Merge worktree branch into main and exit'],
+      ['/worktree discard',        'Remove worktree without merging'],
+      ['/worktree clean [--all]',  'Remove stale .koda worktrees (add --all for .claude too)'],
+      ['/worktree list',           'Show all git worktrees'],
+      ['/worktree status',         'Show this help'],
+    ];
+    for (const [cmd, desc] of rows) {
+      console.log(`  ${chalk.cyan(cmd.padEnd(26))} ${chalk.gray(desc)}`);
+    }
+  }
+
+  renderWorktreeEntered(active: NonNullable<HeaderContext['worktree']>): void {
+    console.log();
+    console.log(`  ${L.WORKTREE}${chalk.green('entered')} ${chalk.white(shortenPath(active.worktreePath))}`);
+    console.log(`         ${chalk.gray('branch')} ${active.branchName}`);
+    console.log(`  ${chalk.gray('Agents now run in the worktree. Merge or discard when done.')}`);
+  }
+
+  renderWorktreeMerged(active: NonNullable<HeaderContext['worktree']>): void {
+    console.log();
+    console.log(`  ${L.WORKTREE}${chalk.green('merged')} ${chalk.white(active.branchName)} → main`);
+    console.log(`  ${chalk.gray('Back on main tree.')}`);
+  }
+
+  renderWorktreeDiscarded(active: NonNullable<HeaderContext['worktree']>): void {
+    console.log();
+    console.log(`  ${L.WORKTREE}${chalk.yellow('discarded')} ${chalk.white(active.branchName)}`);
+    console.log(`  ${chalk.gray('Worktree removed — changes were not merged.')}`);
+  }
+
+  renderWorktreeList(
+    entries: Array<{ path: string; branch: string; head: string }>,
+    active: HeaderContext['worktree'] | null | undefined,
+  ): void {
+    console.log();
+    console.log('  ' + chalk.bold('Git worktrees'));
+    console.log();
+    if (entries.length === 0) {
+      console.log(chalk.gray('  (none)'));
+      return;
+    }
+    for (const e of entries) {
+      const isActive = active?.worktreePath === e.path;
+      const mark = isActive ? chalk.green(' ●') : '  ';
+      console.log(
+        `${mark} ${chalk.cyan(shortenPath(e.path))} ${chalk.gray(e.branch || 'detached')}`,
+      );
+    }
+  }
+
+  /** Banner shown above prompt while in worktree mode. */
+  renderWorktreePromptBanner(active: NonNullable<HeaderContext['worktree']>): void {
     console.log(
-      chalk.gray('  ') +
-      chalk.white(ctx.repoName) +
-      chalk.gray(` (${ctx.branch})`) +
-      chalk.gray(' · ') +
-      formatIndexStatus(ctx.indexStatus) +
-      chalk.gray(' · ') +
-      chalk.white(ctx.model),
+      chalk.magenta(`  WKTREE ${active.branchName}`) +
+      chalk.gray(` · ${shortenPath(active.worktreePath)} · /worktree merge · discard`),
     );
-    console.log();
   }
 
   renderWelcome(): void {
-    console.log(chalk.gray('  Ask in plain English, or use /commands (type /help).'));
-    console.log(chalk.gray('  Examples: fix the login bug · explain src/auth.ts · add rate limiting'));
-    console.log();
+    // Welcome content is rendered inside renderHeader (Claude Code–style dashboard).
   }
 
-  renderPrompt(): void {
+  renderPrompt(hint = 'Try "explain src/auth.ts"'): void {
+    this.clearSlashMenu();
+    if (hint) {
+      console.log(chalk.gray(`  ${hint}`));
+    }
     process.stdout.write(chalk.cyan('> '));
+  }
+
+  /** Live slash-command picker (Claude Code–style) — pass [] to clear. */
+  renderSlashMenu(commands: SlashCommandDef[], selectedIndex = 0): void {
+    if (this._slashMenuLines > 0) {
+      process.stdout.write(`\x1b[${this._slashMenuLines}A\x1b[0J`);
+      this._slashMenuLines = 0;
+    }
+    if (commands.length === 0) return;
+
+    const VISIBLE = 12;
+    let start = 0;
+    if (commands.length > VISIBLE) {
+      start = Math.max(0, Math.min(selectedIndex - 4, commands.length - VISIBLE));
+    }
+    const end = Math.min(commands.length, start + VISIBLE);
+    const window = commands.slice(start, end);
+
+    const lines: string[] = [''];
+    if (start > 0) {
+      lines.push(chalk.gray(`  ↑ ${start} more above`));
+    }
+    for (let i = 0; i < window.length; i++) {
+      const globalIndex = start + i;
+      const { name, description, wip } = window[i]!;
+      const active = globalIndex === selectedIndex;
+      const namePadded = name.padEnd(16);
+      const desc = wip ? `${description} wip` : description;
+
+      if (active) {
+        // High-contrast row — visible on dark and light terminals (not plain white/black text)
+        lines.push('  ' + chalk.bgCyan.black.bold(`› ${namePadded} ${desc}`));
+      } else {
+        lines.push(`    ${chalk.cyan(namePadded)} ${chalk.gray(desc)}`);
+      }
+    }
+    if (end < commands.length) {
+      lines.push(chalk.gray(`  ↓ ${commands.length - end} more below`));
+    }
+    lines.push(chalk.gray('  ↑↓ select · Tab or Enter apply'));
+    console.log(lines.join('\n'));
+    this._slashMenuLines = lines.length;
+  }
+
+  clearSlashMenu(): void {
+    this.renderSlashMenu([]);
   }
 
   // ── Spinner with live elapsed timer ──────────────────────────────────────
@@ -433,12 +685,33 @@ export class UIRenderer {
 
   renderStage(raw: string): void {
     const { label, detail } = parseStage(raw);
-    const text = `${label.trim()} ${detail}`;
+    const text = detail ? `${label.trim()} ${detail}` : label.trim();
+    this._updateActivity(text);
+  }
+
+  /** Human-readable one-liner for the live activity spinner. */
+  private _activityDetail(raw: string): string {
+    if (raw.startsWith('READ '))       return `Reading ${raw.slice(5)}`;
+    if (raw.startsWith('SEARCH '))     return `Searching ${raw.slice(7)}`;
+    if (raw.startsWith('WRITE '))      return `Writing ${raw.slice(6)}`;
+    if (raw.startsWith('RUN '))        return `Running ${raw.slice(4)}`;
+    if (raw.startsWith('GIT '))        return `Git ${raw.slice(4)}`;
+    if (raw.startsWith('PLAN '))       return raw.slice(5);
+    if (raw.startsWith('INFO Step '))  return raw.slice(5);
+    if (raw.startsWith('INFO '))       return raw.slice(5);
+    if (raw.startsWith('WORKTREE '))   return raw.slice(9);
+    const { detail } = parseStage(raw);
+    return detail || raw;
+  }
+
+  /** Keep a single Claude Code–style activity line that updates in place. */
+  private _updateActivity(detail: string): void {
+    this.timerLabel = detail;
     if (this.spinner?.isSpinning) {
-      this.spinner.text = text;
-    } else {
-      process.stdout.write(`  ${label} ${chalk.gray(detail)}\n`);
+      this.spinner.text = `${detail} (${this.timerSeconds}s)`;
+      return;
     }
+    this.renderThinking(detail);
   }
 
   stopSpinner(success = true, message?: string): void {
@@ -512,16 +785,19 @@ export class UIRenderer {
     console.log('\n');
   }
 
-  /** Write a one-line stage/operation message. Stops spinner first. */
+  /** Write a one-line stage/operation message. Updates the activity spinner in quiet mode. */
   stream(raw: string): void {
-    this._stopTimer();
-    if (this.spinner?.isSpinning) {
-      this.spinner.stop();
-      this.spinner = null;
-      console.log();
+    const quiet  = !this._streamVerbose && isQuietStage(raw);
+    const detail = this._activityDetail(raw);
+
+    if (quiet) {
+      this._updateActivity(detail);
+      return;
     }
-    const { label, detail } = parseStage(raw);
-    process.stdout.write(`  ${label} ${chalk.gray(detail)}\n`);
+
+    this._updateActivity(detail);
+    const { label, detail: stageDetail } = parseStage(raw);
+    process.stdout.write(`  ${label} ${chalk.gray(stageDetail)}\n`);
   }
 
   // ── Plan display ──────────────────────────────────────────────────────────
@@ -546,7 +822,12 @@ export class UIRenderer {
   renderExecutionPlan(plan: ExecutionPlan): void {
     const steps = plan.steps.map((s: PlanStep) => s.description);
     this.setLastPlan(steps);
-    this.planTracker.setSteps(steps);
+    this._planStepIndex = 0;
+    if (this._streamVerbose) {
+      this.planTracker.setSteps(steps);
+    } else {
+      this._updateActivity(`Planning · ${steps.length} steps`);
+    }
   }
 
   /**
@@ -554,6 +835,17 @@ export class UIRenderer {
    * Call this after each step completes.
    */
   advancePlan(): void {
+    if (!this._streamVerbose) {
+      this._planStepIndex++;
+      if (this._planSteps.length > 0) {
+        const step = this._planSteps[this._planStepIndex - 1];
+        const label = step
+          ? `Step ${this._planStepIndex}/${this._planSteps.length}: ${step}`
+          : `Step ${this._planStepIndex}/${this._planSteps.length}`;
+        this._updateActivity(label);
+      }
+      return;
+    }
     this.planTracker.advance();
   }
 
@@ -646,6 +938,15 @@ export class UIRenderer {
   renderFeatureExecutionSummary(
     metrics: Omit<ExecutionMetrics, 'verificationStatus'> & { verificationStatus: string },
   ): void {
+    if (!this._streamVerbose) {
+      const ver = metrics.verificationStatus === 'PASSED' ? chalk.green('✔') : chalk.red('✗');
+      console.log(
+        `  ${ver} ${chalk.gray(`${metrics.stepsExecuted} steps · ${metrics.totalToolCalls} tools · ${metrics.verificationStatus.toLowerCase()}`)}`,
+      );
+      console.log();
+      return;
+    }
+
     const verColor =
       metrics.verificationStatus === 'PASSED' ? chalk.green : chalk.red;
 
@@ -675,6 +976,7 @@ export class UIRenderer {
   // ── Context visibility ────────────────────────────────────────────────────
 
   renderContext(files: string[], tokens: number): void {
+    if (!this._streamVerbose) return;
     if (files.length === 0) return;
     console.log();
     console.log(`  ${L.CONTEXT}`);
@@ -689,6 +991,7 @@ export class UIRenderer {
 
   renderTimeline(entries: Array<{ name: string; durationMs: number }>): void {
     if (entries.length === 0) return;
+    if (!this._streamVerbose) return;
     console.log();
     console.log('  ' + chalk.gray('Execution timeline:'));
     console.log();
@@ -725,6 +1028,11 @@ export class UIRenderer {
   // ── Execution summary ─────────────────────────────────────────────────────
 
   renderExecutionSummary(metrics: ChatMetrics): void {
+    this._stopTimer();
+    if (this.spinner?.isSpinning) {
+      this.spinner.stop();
+      this.spinner = null;
+    }
     const tokensK = metrics.tokens >= 1000
       ? (metrics.tokens / 1000).toFixed(0) + 'k'
       : String(metrics.tokens);
@@ -734,6 +1042,7 @@ export class UIRenderer {
     console.log(
       `  ${L.OK} ${chalk.gray(metrics.tools + ' tool' + (metrics.tools !== 1 ? 's' : '') + ' · ' + tokensK + ' tokens' + refPct + ' · ' + metrics.duration + 's')}`,
     );
+    console.log(`  ${chalk.gray('Total execution time:')} ${chalk.white(metrics.duration + 's')}`);
     console.log();
   }
 

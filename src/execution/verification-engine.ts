@@ -84,7 +84,9 @@ export class VerificationLoop {
     let lastDurationMs = 0;
 
     for (let round = 0; round < MAX_VERIFY_ROUNDS; round++) {
-      if (signal?.aborted) break;
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted', 'AbortError');
+      }
 
       onStage?.(`INFO Verification round ${round + 1}/${MAX_VERIFY_ROUNDS} (tsc → lint → tests)`);
       logger.debug(`[verification-loop] Round ${round + 1}`);
@@ -95,14 +97,14 @@ export class VerificationLoop {
 
       if (result.success) {
         onStage?.('OK Verification PASSED');
-        logger.info('[verification-loop] Verification passed');
+        logger.debug('[verification-loop] Verification passed');
         return { passed: true, roundsRun: round + 1, errors: [], durationMs: lastDurationMs };
       }
 
       const errors = result.errors.slice(0, 8);
       allErrors.push(...errors);
       onStage?.(`WARN Verification failed — ${errors.length} error(s) in round ${round + 1}`);
-      logger.warn(`[verification-loop] Round ${round + 1} failed: ${errors[0] ?? 'unknown error'}`);
+      logger.debug(`[verification-loop] Round ${round + 1} failed: ${errors[0] ?? 'unknown error'}`);
 
       // Last round — no fix attempt needed
       if (round >= MAX_VERIFY_ROUNDS - 1) break;
@@ -135,7 +137,7 @@ export class VerificationLoop {
           localHistory.push({ role: 'assistant', content: fixResponse });
         }
       } catch (err) {
-        logger.warn(`[verification-loop] Fix attempt ${round + 1} failed: ${(err as Error).message}`);
+        logger.debug(`[verification-loop] Fix attempt ${round + 1} failed: ${(err as Error).message}`);
       }
     }
 

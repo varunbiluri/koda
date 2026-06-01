@@ -13,15 +13,21 @@ import { loadIndex, loadIndexMetadata } from '../../../store/index-store.js';
 import { agentRegistry } from '../../../orchestrator/agent-registry.js';
 import { skillRegistry } from '../../../skills/skill-registry.js';
 import { mcpManager } from '../../../mcp/mcp-manager.js';
+import { permissionGate } from '../../../runtime/permission-gate.js';
 import { runMcpCommand } from '../../../mcp/cli-handlers.js';
 import { runSlashCommit } from './commit-handler.js';
+import { runSlashPr } from './pr-handler.js';
+import { runWorktreeCommand } from './worktree-handler.js';
 import { WorkspaceIntelligence } from '../../../memory/workspace-intelligence.js';
+import type { WorktreeSession } from '../../../runtime/worktree-session.js';
 import {
   canonicalSlashCommand,
   parseSlashCommand,
+  SLASH_COMMANDS,
   SLASH_CATEGORY_LABELS,
   getCommandsByCategory,
 } from './registry.js';
+import { filterSlashCommands } from './completer.js';
 
 export type SlashResult = 'continue' | 'quit';
 
@@ -33,6 +39,9 @@ export interface SlashHandlerContext {
   runSetupWizard:  () => Promise<boolean>;
   handleInlineInit:(ctx: ConversationContext) => Promise<void>;
   handleDiff:      (ctx: ConversationContext) => Promise<void>;
+  toggleVerbose?:  () => boolean;
+  worktreeSession?: WorktreeSession;
+  onWorktreeRootChange?: (root: string, branch: string) => void;
 }
 
 export async function handleSlashCommand(
@@ -41,6 +50,12 @@ export async function handleSlashCommand(
 ): Promise<SlashResult> {
   const { cmd: rawCmd, args } = parseSlashCommand(input);
   const cmd = canonicalSlashCommand(rawCmd);
+
+  if (input.trim() === '/') {
+    h.ui.renderSlashMenu(SLASH_COMMANDS, 0);
+    console.log();
+    return 'continue';
+  }
 
   switch (cmd) {
     case '/help':
@@ -114,8 +129,40 @@ export async function handleSlashCommand(
       });
       return 'continue';
 
+    case '/pr':
+      await runSlashPr({
+        rootPath: h.ctx.rootPath,
+        ui:       h.ui,
+        userHint: args.join(' ').trim() || undefined,
+      });
+      return 'continue';
+
     case '/diff':
       await h.handleDiff(h.ctx);
+      return 'continue';
+
+    case '/worktree':
+      if (!h.worktreeSession) {
+        h.ui.renderError('Worktree session unavailable.');
+        console.log();
+        return 'continue';
+      }
+      await runWorktreeCommand(
+        args,
+        h.worktreeSession.getMainRoot(),
+        h.worktreeSession,
+        h.ui,
+        (root, branch) => {
+          h.ctx.rootPath = root;
+          h.ctx.branch = branch;
+          if (h.headerCtx) {
+            h.headerCtx.rootPath = root;
+            h.headerCtx.branch = branch;
+            h.headerCtx.worktree = h.worktreeSession?.getActive() ?? undefined;
+          }
+          h.onWorktreeRootChange?.(root, branch);
+        },
+      );
       return 'continue';
 
     case '/review':
@@ -156,6 +203,23 @@ export async function handleSlashCommand(
     case '/permissions':
       showPermissions(h.ui);
       return 'continue';
+
+    case '/trust':
+      permissionGate.grantSessionTrust();
+      h.ui.renderInfo('Session trust enabled — run/write tools auto-approved until exit.');
+      console.log();
+      return 'continue';
+
+    case '/verbose': {
+      const on = h.toggleVerbose?.() ?? false;
+      h.ui.renderInfo(
+        on
+          ? 'Verbose on — tool traces + [koda] debug logs visible'
+          : 'Verbose off — minimal UI (default)',
+      );
+      console.log();
+      return 'continue';
+    }
 
     case '/config':
       await showConfig(h.ui);
@@ -216,9 +280,23 @@ export async function handleSlashCommand(
       console.log();
       return 'continue';
 
-    default:
-      h.ui.renderError(`Unknown command: ${input}`, 'Type /help for all commands.');
+    default: {
+      const matches = filterSlashCommands(cmd, 5);
+      if (matches.length === 1) {
+        h.ui.renderError(
+          `Unknown command: ${input}`,
+          `Did you mean ${matches[0]!.name}? Press Tab to complete.`,
+        );
+      } else if (matches.length > 1) {
+        h.ui.renderError(
+          `Unknown command: ${input}`,
+          `Matches: ${matches.map((m) => m.name).join(', ')}`,
+        );
+      } else {
+        h.ui.renderError(`Unknown command: ${input}`, 'Type /help for all commands.');
+      }
       return 'continue';
+    }
   }
 }
 

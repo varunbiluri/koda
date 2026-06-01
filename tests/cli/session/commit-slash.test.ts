@@ -27,6 +27,10 @@ vi.mock('../../../src/tools/git-tools.js', () => ({
     success: true,
     data:    '[main abc1234] fix(auth): invalidate reset token',
   }),
+  KODA_CO_AUTHOR_TRAILER:
+    'Co-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>',
+  buildKodaCommitMessage: (message: string) =>
+    `${message.trim()}\n\nGenerated with help from Koda AI.\n\nCo-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>`,
 }));
 
 vi.mock('../../../src/runtime/permission-gate.js', () => ({
@@ -44,6 +48,7 @@ import {
   generateCommitMessage,
   runSlashCommit,
 } from '../../../src/cli/session/slash/commit-handler.js';
+import { buildKodaCommitMessage, KODA_CO_AUTHOR_TRAILER } from '../../../src/tools/git-tools.js';
 
 describe('sanitizeCommitMessage', () => {
   it('strips markdown fences', () => {
@@ -92,18 +97,50 @@ describe('runSlashCommit', () => {
     ui.renderSuccess.mockClear();
   });
 
-  it('reports when nothing is staged', async () => {
+  it('offers to stage all when nothing is staged', async () => {
     vi.mocked(execSync).mockImplementation((cmd) => {
       const s = String(cmd);
       if (s.includes('diff --staged') && !s.includes('name-status')) return '';
-      if (s.includes('status --short')) return ' M src/foo.ts';
+      if (s.includes('status --porcelain')) return ' M src/foo.ts';
+      if (s.includes('add -A')) return '';
+      return '';
+    });
+    vi.mocked(permissionGate.requestApproval).mockResolvedValueOnce(false);
+
+    await runSlashCommit({ rootPath: '/repo', ui: ui as never });
+
+    expect(ui.renderInfo).toHaveBeenCalledWith(expect.stringContaining('Nothing staged'));
+    expect(permissionGate.requestApproval).toHaveBeenCalledWith(
+      'git_add',
+      'Stage all changes (git add -A)',
+    );
+    expect(gitCommit).not.toHaveBeenCalled();
+  });
+
+  it('stages all, generates message, and commits when approved', async () => {
+    let staged = false;
+    vi.mocked(execSync).mockImplementation((cmd) => {
+      const s = String(cmd);
+      if (s.includes('add -A')) {
+        staged = true;
+        return '';
+      }
+      if (s.includes('diff --staged') && !s.includes('name-status')) {
+        return staged ? 'diff --git a/src/foo.ts b/src/foo.ts\n+fix' : '';
+      }
+      if (s.includes('name-status')) return staged ? 'M\tsrc/foo.ts' : '';
+      if (s.includes('status --porcelain')) return ' M src/foo.ts';
       return '';
     });
 
     await runSlashCommit({ rootPath: '/repo', ui: ui as never });
 
-    expect(ui.renderInfo).toHaveBeenCalledWith(expect.stringContaining('Nothing staged'));
-    expect(gitCommit).not.toHaveBeenCalled();
+    expect(permissionGate.requestApproval).toHaveBeenCalledWith(
+      'git_add',
+      'Stage all changes (git add -A)',
+    );
+    expect(gitCommit).toHaveBeenCalled();
+    expect(ui.renderSuccess).toHaveBeenCalled();
   });
 
   it('generates message, asks approval, and commits staged changes', async () => {
@@ -123,7 +160,11 @@ describe('runSlashCommit', () => {
       expect.stringContaining('fix(auth)'),
     );
     expect(gitCommit).toHaveBeenCalledWith(
-      'fix(auth): invalidate reset token after use',
+      expect.stringContaining('fix(auth): invalidate reset token after use'),
+      '/repo',
+    );
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining(KODA_CO_AUTHOR_TRAILER),
       '/repo',
     );
     expect(ui.renderSuccess).toHaveBeenCalled();
@@ -145,7 +186,14 @@ describe('runSlashCommit', () => {
     });
 
     expect(mockSend).not.toHaveBeenCalled();
-    expect(gitCommit).toHaveBeenCalledWith('chore: manual message', '/repo');
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining('chore: manual message'),
+      '/repo',
+    );
+    expect(gitCommit).toHaveBeenCalledWith(
+      expect.stringContaining(KODA_CO_AUTHOR_TRAILER),
+      '/repo',
+    );
   });
 
   it('cancels when user denies approval', async () => {

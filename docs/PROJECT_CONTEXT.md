@@ -107,30 +107,71 @@ Product Hunt / HN headline (after live KCB-10 only):
 
 ## Success criteria for v0.1.3
 
-Release gates — all must pass before Product Hunt / public launch:
+Release gates — **only these three before tag** (no new UI panels, MCP, agents, or slash commands):
+
+| # | Gate | Status |
+|---|------|--------|
+| 1 | **Provider config works** — `koda login` + live API call succeeds | ⏳ Pending |
+| 2 | **KCB-10 live benchmark** — `pnpm benchmark:kcb10:live` | ⏳ Pending |
+| 3 | **Tag `v0.1.3`** — README + leaderboard updated with **live** numbers | ⏳ Pending |
+
+Supporting gates (should already pass):
 
 | Gate | Status |
 |------|--------|
 | All tests pass (`pnpm test`) | Required |
 | TypeScript builds (`pnpm build`) | Required |
-| ProductMetrics v2 enabled on autonomous + REPL paths | ✅ Done |
-| Reference-first + `get_tool_result` landed | ✅ Done |
-| `/cost` shows real session telemetry (not WIP) | ✅ Done |
-| `package.json` license = MIT (matches LICENSE) | ✅ Done |
-| **KCB-10 live benchmark executed** | ⏳ Pending |
-| README contains **live** KCB-10 results (not mock) | ⏳ Pending |
-| `benchmarks/kcb-10/leaderboard.md` updated from live run | ⏳ Pending |
-| No major success-rate regression vs prior baseline | ⏳ Verify on live run |
-| Tagged release `v0.1.3` (not from huge uncommitted branch) | ⏳ Pending |
+| ProductMetrics v2 + reference-first + `/cost` | ✅ Done |
+| MIT license | ✅ Done |
+| **Koda Desktop = Agent Workspace** (tool cards, approvals, context, metrics) | ✅ Done |
+
+---
+
+## Koda Desktop milestone
+
+```text
+Before:  Chat UI + CLI wrapper
+Now:     Agent Workspace
+```
+
+Shipped surfaces: structured tool cards, approval center, context panel, metrics panel (KEI/ref rate), thread persistence, terminal drawer (⌘J).
+
+**Post v0.1.3 desktop priorities** (not blocking release):
+
+| Priority | Item |
+|----------|------|
+| P0 | Diff viewer quality — Ask → Plan → Tools → Diff → Approve |
+| P0 | Thread history — task, diff, and metrics per thread |
+| P1 | Metrics timeline (last N tasks KEI trend) |
+| P1 | Benchmark panel (KCB-10 scorecard in app) |
+
+Product readiness (internal): **~8.2 / 10** — CLI/repo intelligence/benchmarking strong; diff review polish and live proof pending.
+
+---
+
+## Marketing positioning
+
+```text
+Local-first AI engineering workspace
+
+• Repository Intelligence
+• Context Efficiency
+• Transparent Benchmarking
+• Bring Your Own Model
+• Human-in-the-loop approvals
+```
+
+Not: *"Open-source Codex clone."*
 
 ---
 
 ## Immediate next steps
 
-1. `pnpm benchmark:kcb10:live` — collect real numbers
-2. Update README **Live Benchmark Results** from live scorecard
-3. Commit efficiency sprint + tag **v0.1.3**
-4. Product Hunt only after live leaderboard is public
+1. `koda login` — fix provider config (Azure 401 = missing/invalid credentials)
+2. `pnpm benchmark:kcb10:live` — collect real numbers
+3. Update README + `benchmarks/kcb-10/leaderboard.md` from live run
+4. Tag **v0.1.3**
+5. Product Hunt only after live leaderboard is public
 
 ---
 

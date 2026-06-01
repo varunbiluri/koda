@@ -48,6 +48,42 @@ const SIMPLE_PATTERNS: RegExp[] = [
   /\bwalk\s+me\s+through\b/i,
   /\bunderstand\b/i,
   /\boverview\b/i,
+  /\bwhat\s+context\b/i,
+  /\bwhat\s+do\s+you\s+know\b/i,
+  /\bwho\s+are\s+you\b/i,
+];
+
+/**
+ * Questions about Koda's session/repo awareness — never run the feature pipeline.
+ */
+const META_SESSION_PATTERNS: RegExp[] = [
+  /\bwhat\s+context\b/i,
+  /\bwhat\s+do\s+you\s+know\b/i,
+  /\bwhat\s+(have\s+you|did\s+you)\s+(learn|seen|read|gather)\b/i,
+  /\bwho\s+are\s+you\b/i,
+  /\bwhat\s+is\s+(this|the)\s+repo\b/i,
+  /\bwhat\s+can\s+you\s+do\b/i,
+  /\b(where|which)\s+(location|locaion|directory|folder|path|repo)\b/i,
+  /\bwhere\s+are\s+we\b/i,
+  /\bin\s+which\s+(location|locaion|directory|folder|path|repo)\b/i,
+];
+
+/**
+ * Git / GitHub operations — operational, not multi-step engineering.
+ * Checked before COMPLEX patterns so "create PR" does not escalate to MEDIUM.
+ */
+const GIT_WORKFLOW_PATTERNS: RegExp[] = [
+  /\b(create|open|make|submit|start|crate)\s+(a\s+)?(pull\s+request|pr)\b/i,
+  /\bgh\s+pr\s+(create|view|list)\b/i,
+  /\bpull\s+request\b/i,
+  /\b(push|publish)\s+(the\s+)?(branch|changes)\b/i,
+  /\bpush\s+to\s+(origin|github|remote)\b/i,
+  /\b(commit|stage)\s+(and\s+)?(push|pr)\b/i,
+  /\bcreate\s+(a\s+)?(git\s+)?branch\b/i,
+  /\bcreate\s+new\s+branch\b/i,
+  /\bcheckout\s+-b\b/i,
+  /\b(branch|checkout)\b.*\b(pr|pull\s+request)\b/i,
+  /\bmerge\s+(this\s+)?(pr|pull\s+request|branch)\b/i,
 ];
 
 /**
@@ -125,13 +161,26 @@ export class TaskRouter {
    *                         empty array when no index is available.
    */
   classify(query: string, retrievedFiles: string[]): TaskClassification {
+    const hasGitOp   = GIT_WORKFLOW_PATTERNS.some((p) => p.test(query));
     const hasSimple  = SIMPLE_PATTERNS.some((p)  => p.test(query));
     const hasComplex = COMPLEX_PATTERNS.some((p) => p.test(query));
     const fileCount  = retrievedFiles.length;
 
     logger.debug(
-      `[task-router] signals: simple=${hasSimple} complex=${hasComplex} files=${fileCount}`,
+      `[task-router] signals: git=${hasGitOp} simple=${hasSimple} complex=${hasComplex} files=${fileCount}`,
     );
+
+    // Git/PR operations — fast path (SIMPLE reasoning, not MEDIUM pipeline)
+    if (hasGitOp) {
+      return this._result(TaskComplexity.SIMPLE, C.HIGH,
+        'Git/GitHub workflow operation — direct tools, not feature pipeline');
+    }
+
+    // Session / meta questions — answer directly, never MEDIUM pipeline
+    if (META_SESSION_PATTERNS.some((p) => p.test(query))) {
+      return this._result(TaskComplexity.SIMPLE, C.HIGH,
+        'Session or repo awareness question — no engineering pipeline');
+    }
 
     // ── Decision table (priority top-to-bottom) ────────────────────────────
 
@@ -196,6 +245,11 @@ export class TaskRouter {
         `${fileCount} files retrieved; broad repository impact inferred`);
     }
     if (fileCount > 2) {
+      // Question-shaped queries without action verbs → read/explain, not build
+      if (/\?\s*$/.test(query.trim()) && !hasComplex) {
+        return this._result(TaskComplexity.SIMPLE, C.MEDIUM,
+          `Exploratory question with ${fileCount} retrieved files`);
+      }
       return this._result(TaskComplexity.MEDIUM, C.LOW,
         `${fileCount} files retrieved; moderate impact inferred`);
     }
@@ -214,4 +268,17 @@ export class TaskRouter {
   ): TaskClassification {
     return { complexity, confidence, reason };
   }
+}
+
+export function isMetaSessionQuestion(input: string): boolean {
+  return META_SESSION_PATTERNS.some((p) => p.test(input.trim()));
+}
+
+export function isIdentityQuestion(input: string): boolean {
+  const t = input.trim();
+  return /\bwho\s+are\s+you\b/i.test(t) || /\bwhat\s+can\s+you\s+do\b/i.test(t);
+}
+
+export function isContextQuestion(input: string): boolean {
+  return isMetaSessionQuestion(input) && !isIdentityQuestion(input);
 }

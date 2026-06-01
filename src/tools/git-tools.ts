@@ -1,3 +1,6 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { runTerminal } from './terminal-tools.js';
 import type { ToolResult } from './types.js';
 
@@ -6,6 +9,11 @@ export const KODA_AUTHOR = 'Koda AI <268287658+koda-ai-engineer@users.noreply.gi
 /** GitHub-recognized co-author trailer. Must be the final line of the commit message. */
 export const KODA_CO_AUTHOR_TRAILER =
   'Co-authored-by: Koda AI <268287658+koda-ai-engineer@users.noreply.github.com>';
+
+/** Append Koda co-author trailer (GitHub contributor graph). */
+export function buildKodaCommitMessage(message: string): string {
+  return `${message.trim()}\n\nGenerated with help from Koda AI.\n\n${KODA_CO_AUTHOR_TRAILER}`;
+}
 
 export async function gitDiff(rootPath: string): Promise<ToolResult<string>> {
   const result = await runTerminal('git diff', rootPath);
@@ -93,8 +101,7 @@ export async function createKodaCommit(
   }
 
   // Build message with co-author trailer as the final line (GitHub requirement)
-  const fullMessage =
-    `${message}\n\nGenerated with help from Koda AI.\n\n${KODA_CO_AUTHOR_TRAILER}`;
+  const fullMessage = buildKodaCommitMessage(message);
 
   const escapedMessage = fullMessage.replace(/"/g, '\\"');
   const commitResult = await runTerminal(`git commit -m "${escapedMessage}"`, rootPath);
@@ -114,14 +121,23 @@ export async function gitCreatePr(
   body: string,
   rootPath: string,
 ): Promise<ToolResult<string>> {
-  const safeTitle = title.replace(/"/g, '\\"');
-  const safeBody = body.replace(/"/g, '\\"');
-  const result = await runTerminal(
-    `gh pr create --title "${safeTitle}" --body "${safeBody}"`,
-    rootPath,
-  );
-  if (result.success && result.data) {
-    return { success: true, data: result.data.stdout.trim() };
+  // Write body to a temp file — inline --body breaks on backticks, $, quotes in markdown.
+  const bodyFile = path.join(os.tmpdir(), `koda-pr-body-${process.pid}-${Date.now()}.md`);
+  await fs.writeFile(bodyFile, body, 'utf8');
+
+  try {
+    const safeTitle = title.replace(/"/g, '\\"');
+    const safeFile  = bodyFile.replace(/"/g, '\\"');
+    const result = await runTerminal(
+      `gh pr create --title "${safeTitle}" --body-file "${safeFile}"`,
+      rootPath,
+    );
+    if (result.success && result.data) {
+      return { success: true, data: result.data.stdout.trim() };
+    }
+    const detail = result.data?.stderr?.trim() || result.error || 'gh pr create failed';
+    return { success: false, error: detail };
+  } finally {
+    await fs.unlink(bodyFile).catch(() => undefined);
   }
-  return { success: false, error: result.error };
 }

@@ -1,0 +1,58 @@
+{
+  "name": "koda-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Koda desktop agent for macOS and Windows",
+  "main": "main.cjs",
+  "author": "Varun Billuri",
+  "scripts": {
+    "start": "electron .",
+    "prepare:engine": "node ../../scripts/prepare-desktop-engine.mjs",
+    "pack": "npm run prepare:engine && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "pack:mac": "npm run prepare:engine && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "pack:win": "npm run prepare:engine && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.koda.desktop",
+    "productName": "Koda",
+    "copyright": "Copyright © Varun Billuri",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "ui/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "koda-engine",
+        "to": "koda",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"],
+      "artifactName": "Koda-${version}-mac.${ext}",
+      "identity": null
+    },
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "Koda-${version}-win.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Koda-Setup-${version}.${ext}"
+    },
+    "dmg": {
+      "title": "Koda ${version}"
+    }
+  }
+}
